@@ -37,7 +37,9 @@ import com.datastax.oss.driver.api.core.data.UdtValue;
 import com.datastax.oss.driver.api.core.metadata.schema.ColumnMetadata;
 import com.datastax.oss.driver.api.core.metadata.schema.KeyspaceMetadata;
 import com.datastax.oss.driver.api.core.metadata.schema.TableMetadata;
+import com.datastax.oss.driver.api.core.servererrors.InvalidQueryException;
 import com.datastax.oss.driver.api.core.servererrors.QueryExecutionException;
+import com.datastax.oss.driver.api.core.servererrors.SyntaxError;
 import com.datastax.oss.driver.api.core.type.DataType;
 import com.datastax.oss.driver.api.core.type.DataTypes;
 import com.datastax.oss.driver.api.core.type.ListType;
@@ -94,6 +96,7 @@ import org.apache.nifi.service.cassandra.mapping.JavaSQLDateCodec;
 import org.apache.nifi.service.cassandra.mapping.JavaSQLTimeCodec;
 import org.apache.nifi.service.cassandra.mapping.JavaSQLTimestampCodec;
 import org.apache.nifi.service.cql.api.constants.CqlBatchType;
+import org.apache.nifi.service.cql.api.constants.CqlStatementType;
 import org.apache.nifi.service.cql.api.constants.PrimaryKeyFieldType;
 import org.apache.nifi.service.cql.api.constants.UpdateMethod;
 import org.apache.nifi.service.cql.api.exception.QueryFailureException;
@@ -111,6 +114,7 @@ import org.apache.nifi.service.cql.api.service.AbstractCQLExecutionService;
 import org.apache.nifi.service.cql.api.service.CQLExecutionService;
 import org.apache.nifi.service.cql.api.service.CQLQueryCallback;
 import org.apache.nifi.service.cql.api.service.ContactPoints;
+import org.apache.nifi.service.cql.api.service.CqlStatements;
 import org.apache.nifi.service.cql.api.service.QueryOverrides;
 import org.apache.nifi.service.cql.api.service.WriteOverrides;
 import org.apache.nifi.ssl.SSLContextProvider;
@@ -532,6 +536,38 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         } catch (Exception ex) {
             callback.clear();
             throw new ProcessException("Error querying CQL", ex);
+        }
+    }
+
+    @Override
+    public void validateStatement(final String cql, final CqlStatementType expectedType, final int parameterCount)
+            throws QueryFailureException {
+        final CqlStatementType actualType = CqlStatements.typeOf(cql);
+        if (actualType != expectedType) {
+            throw new IllegalArgumentException("The statement is " + (actualType == null ? "not a SELECT, INSERT, UPDATE or DELETE" : "a " + actualType)
+                    + " but " + expectedType + " was expected");
+        }
+
+        if ((expectedType == CqlStatementType.UPDATE || expectedType == CqlStatementType.DELETE) && !CqlStatements.hasWhereClause(cql)) {
+            throw new IllegalArgumentException("A " + expectedType + " without a WHERE clause is not allowed");
+        }
+
+        final PreparedStatement preparedStatement;
+        try {
+            preparedStatement = cassandraSession.prepare(cql);
+        } catch (final SyntaxError | InvalidQueryException e) {
+            // The cluster has understood the request and rejected the statement - unparseable, or naming a
+            // keyspace, table or column that does not exist - which a retry cannot fix.
+            throw new IllegalArgumentException("The cluster rejected the statement: " + e.getMessage(), e);
+        } catch (final QueryExecutionException | AllNodesFailedException | DriverTimeoutException e) {
+            getLogger().error("Error preparing statement for validation", e);
+            throw new QueryFailureException();
+        }
+
+        final int markerCount = preparedStatement.getVariableDefinitions().size();
+        if (markerCount != parameterCount) {
+            throw new IllegalArgumentException("The statement has " + markerCount + " bind marker(s) but " + parameterCount
+                    + " parameter(s) were supplied");
         }
     }
 

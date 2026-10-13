@@ -22,6 +22,7 @@ import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.record.path.RecordPath;
 import org.apache.nifi.serialization.record.Record;
 import org.apache.nifi.service.cql.api.constants.CqlBatchType;
+import org.apache.nifi.service.cql.api.constants.CqlStatementType;
 import org.apache.nifi.service.cql.api.constants.UpdateMethod;
 import org.apache.nifi.service.cql.api.exception.QueryFailureException;
 import org.apache.nifi.service.cql.api.lookup.CqlStatementResult;
@@ -130,6 +131,11 @@ public class MockCQLQueryExecutionService extends AbstractControllerService impl
 
     public List<Object> getLastParameters() {
         return lastParameters;
+    }
+
+    @Override
+    public void validateStatement(String cql, CqlStatementType expectedType, int parameterCount) {
+        throw new UnsupportedOperationException();
     }
 
     @Override

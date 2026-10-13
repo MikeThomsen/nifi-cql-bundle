@@ -20,6 +20,7 @@ import org.apache.nifi.controller.AbstractControllerService;
 import org.apache.nifi.record.path.RecordPath;
 import org.apache.nifi.serialization.record.Record;
 import org.apache.nifi.service.cql.api.constants.CqlBatchType;
+import org.apache.nifi.service.cql.api.constants.CqlStatementType;
 import org.apache.nifi.service.cql.api.constants.UpdateMethod;
 import org.apache.nifi.service.cql.api.lookup.CqlCell;
 import org.apache.nifi.service.cql.api.lookup.CqlRow;
@@ -179,6 +180,11 @@ class FakeCQLExecutionService extends AbstractControllerService implements CQLEx
 
     @Override
     public void delete(QualifiedTableName table, Record record, Map<PrimaryKeyIdentifier, RecordPath> overrides, List<String> updateKeys) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void validateStatement(String cql, CqlStatementType expectedType, int parameterCount) {
         throw new UnsupportedOperationException();
     }
 
