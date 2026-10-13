@@ -74,7 +74,20 @@ public abstract class AbstractCQLExecutionService extends AbstractControllerServ
             .identifiesControllerService(SSLContextProvider.class)
             .build();
 
-    public static final PropertyDescriptor USERNAME = new PropertyDescriptor.Builder()
+    public static final PropertyDescriptor HOSTNAME_VALIDATION = new PropertyDescriptor.Builder()
+            .name("Hostname Validation")
+            .description("""
+                    Whether a node's TLS certificate must have been issued for the host being connected to. \
+                    Leave this on: with it off, any certificate the truststore accepts is trusted for every \
+                    node, so a node can be impersonated. Turn it off only for a cluster whose certificates \
+                    do not name its nodes, such as a test cluster.""")
+            .required(true)
+            .allowableValues("true", "false")
+            .defaultValue("true")
+            .dependsOn(PROP_SSL_CONTEXT_SERVICE)
+            .build();
+
+    public static final PropertyDescriptor USERNAME =new PropertyDescriptor.Builder()
             .name("Username")
             .description("Username to access the Cassandra cluster")
             .required(false)

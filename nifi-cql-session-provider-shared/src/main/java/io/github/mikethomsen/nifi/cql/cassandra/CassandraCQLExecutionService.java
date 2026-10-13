@@ -40,6 +40,8 @@ import com.datastax.oss.driver.api.core.metadata.schema.TableMetadata;
 import com.datastax.oss.driver.api.core.servererrors.InvalidQueryException;
 import com.datastax.oss.driver.api.core.servererrors.QueryExecutionException;
 import com.datastax.oss.driver.api.core.servererrors.SyntaxError;
+import com.datastax.oss.driver.api.core.ssl.ProgrammaticSslEngineFactory;
+import com.datastax.oss.driver.api.core.ssl.SslEngineFactory;
 import com.datastax.oss.driver.api.core.type.DataType;
 import com.datastax.oss.driver.api.core.type.DataTypes;
 import com.datastax.oss.driver.api.core.type.ListType;
@@ -180,6 +182,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             USERNAME,
             PASSWORD,
             PROP_SSL_CONTEXT_SERVICE,
+            HOSTNAME_VALIDATION,
             FETCH_SIZE,
             READ_TIMEOUT,
             CONNECT_TIMEOUT,
@@ -275,12 +278,16 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         // Set up the client for secure (SSL/TLS communications) if configured to do so
         final SSLContextProvider sslContextProvider =
                 context.getProperty(PROP_SSL_CONTEXT_SERVICE).asControllerService(SSLContextProvider.class);
-        final SSLContext sslContext;
+        final SslEngineFactory sslEngineFactory;
 
         if (sslContextProvider == null) {
-            sslContext = null;
+            sslEngineFactory = null;
         } else {
-            sslContext = sslContextProvider.createContext();
+            // Built explicitly rather than through CqlSessionBuilder#withSslContext, which turns hostname
+            // validation off.
+            final SSLContext sslContext = sslContextProvider.createContext();
+            final boolean hostnameValidation = context.getProperty(HOSTNAME_VALIDATION).asBoolean();
+            sslEngineFactory = new ProgrammaticSslEngineFactory(sslContext, null, hostnameValidation);
         }
 
         final String username;
@@ -322,7 +329,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         }
 
         builder = builder
-                .withSslContext(sslContext)
+                .withSslEngineFactory(sslEngineFactory)
                 .withLocalDatacenter(datacenter)
                 .withConfigLoader(loader);
 
