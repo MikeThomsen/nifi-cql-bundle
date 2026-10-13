@@ -12,6 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-org.apache.nifi.processors.cql.ExecuteCQL
-org.apache.nifi.processors.cql.ExecuteCQLQueryRecord
-org.apache.nifi.processors.cql.PutCQLRecord
+io.github.mikethomsen.nifi.cql.processors.ExecuteCQL
+io.github.mikethomsen.nifi.cql.processors.ExecuteCQLQueryRecord
+io.github.mikethomsen.nifi.cql.processors.PutCQLRecord

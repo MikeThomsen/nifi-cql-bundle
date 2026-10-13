@@ -16,9 +16,9 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>org.apache.nifi</groupId>
+    <groupId>io.github.mikethomsen</groupId>
     <artifactId>nifi-cql-bundle</artifactId>
-    <version>2.12.0</version>
+    <version>1.0.0</version>
     <packaging>pom</packaging>
 
     <licenses>
@@ -134,43 +134,43 @@
 
             <!-- Modules of this bundle -->
             <dependency>
-                <groupId>org.apache.nifi</groupId>
+                <groupId>io.github.mikethomsen</groupId>
                 <artifactId>nifi-cql-services-api</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
-                <groupId>org.apache.nifi</groupId>
+                <groupId>io.github.mikethomsen</groupId>
                 <artifactId>nifi-cql-services-api-nar</artifactId>
                 <version>${project.version}</version>
                 <type>nar</type>
             </dependency>
             <dependency>
-                <groupId>org.apache.nifi</groupId>
+                <groupId>io.github.mikethomsen</groupId>
                 <artifactId>nifi-cql-processors</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
-                <groupId>org.apache.nifi</groupId>
+                <groupId>io.github.mikethomsen</groupId>
                 <artifactId>nifi-cql-session-provider-shared</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
-                <groupId>org.apache.nifi</groupId>
+                <groupId>io.github.mikethomsen</groupId>
                 <artifactId>nifi-cassandra-session-provider-service</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
-                <groupId>org.apache.nifi</groupId>
+                <groupId>io.github.mikethomsen</groupId>
                 <artifactId>nifi-scylladb-session-provider-service</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
-                <groupId>org.apache.nifi</groupId>
+                <groupId>io.github.mikethomsen</groupId>
                 <artifactId>nifi-cql-distributedmapcache-service</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
-                <groupId>org.apache.nifi</groupId>
+                <groupId>io.github.mikethomsen</groupId>
                 <artifactId>nifi-cql-it-common</artifactId>
                 <version>${project.version}</version>
                 <classifier>tests</classifier>

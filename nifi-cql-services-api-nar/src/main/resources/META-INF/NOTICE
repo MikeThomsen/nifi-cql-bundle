@@ -1,4 +1,10 @@
-nifi-cassandra-services-api-nar
+nifi-cql-services-api-nar
+Copyright 2026 Mike Thomsen
+
+This project is independent of, and is not part of, the Apache NiFi project or the
+Apache Software Foundation. It is derived from the Apache NiFi Cassandra bundle, and the
+notices below are retained for that code and for the third-party components it includes.
+
 Copyright 2016-2020 The Apache Software Foundation
 
 This product includes software developed at
