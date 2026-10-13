@@ -47,7 +47,8 @@ possible, with the following notable behaviors:
 ## Statement types
 
 The _Statement Type_ property (or the `cql.statement.type` FlowFile attribute, when _Statement Type_ is set
-to use it) selects between two CQL statement shapes:
+to use it) selects between two CQL statement shapes. An attribute value that is neither routes the FlowFile to
+`failure`:
 
 * **INSERT** - every field in each record is written to the column of the same name. There is no separate
   concept of "which fields are the primary key" for an INSERT: Cassandra requires all primary key columns to
@@ -92,13 +93,31 @@ a rollback can also be triggered by a failure that has nothing to do with Run Du
 
 * _Time To Live_ overrides the connection service's own default TTL for `INSERT` and `SET`-method `UPDATE`
   statements. Ignored for `INCREMENT`/`DECREMENT`, since Cassandra/ScyllaDB do not support a TTL on counter
-  columns.
+  columns. A TTL must be at least 1 second: CQL counts a TTL in whole seconds and reads 0 as no TTL, so a
+  shorter value would mean "never expire". A shorter value fails validation, or routes the FlowFile to
+  `failure` when it comes from Expression Language.
 * _Timestamp Field_ names a field in each record whose value supplies the CQL write timestamp for that
   record's statement, instead of the time the statement executes. This makes retries/reprocessing safe:
   resubmitting the same record with the same timestamp is a true no-op rather than a write that could win a
   last-write-wins race against different data written to the same row in the meantime. Also ignored for
   `INCREMENT`/`DECREMENT`, since Cassandra/ScyllaDB do not support a custom write timestamp on counter
   columns.
+
+## Null values
+
+A record field whose value is null can be handled in two ways, chosen with _Null Value Handling_:
+
+* **Leave unset** (the default) - the field is not written. Its column keeps whatever value it already
+  holds, and nothing is recorded for it.
+* **Write null** - the field is written as a CQL null. Cassandra and ScyllaDB treat that as a delete of the
+  column's value and record a tombstone for it. Use this when a null in the record is meant to clear the
+  column.
+
+Tombstones are not free: they are kept until the table's `gc_grace_seconds` has passed and are read past by
+every query that touches the row, so writing sparse records with **Write null** can slow reads noticeably.
+
+A primary key column can be neither null nor unset. A record with a null in one fails either way, and its
+FlowFile is routed to `failure`.
 
 ## Primary Key Dynamic Properties
 

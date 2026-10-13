@@ -25,7 +25,9 @@ import java.time.Duration;
  * @param ttl the Time To Live to apply, or {@code null} for the service's default
  * @param timestampField a record field supplying that record's CQL write timestamp, or {@code null} for
  * the current time; ignored for Increment/Decrement
+ * @param unsetNulls whether a record field holding {@code null} is left unset, so its column is not written at
+ * all, rather than bound as a CQL null, which deletes the column's value and leaves a tombstone
  */
-public record WriteOverrides(Duration ttl, String timestampField) {
-    public static final WriteOverrides NONE = new WriteOverrides(null, null);
+public record WriteOverrides(Duration ttl, String timestampField, boolean unsetNulls) {
+    public static final WriteOverrides NONE = new WriteOverrides(null, null, false);
 }

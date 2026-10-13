@@ -121,7 +121,7 @@ public abstract class AbstractCQLExecutionService extends AbstractControllerServ
             .defaultValue("0")
             .required(true)
             .expressionLanguageSupported(ExpressionLanguageScope.ENVIRONMENT)
-            .addValidator(StandardValidators.INTEGER_VALIDATOR)
+            .addValidator(StandardValidators.NON_NEGATIVE_INTEGER_VALIDATOR)
             .build();
 
     public static final PropertyDescriptor COMPRESSION_TYPE = new PropertyDescriptor.Builder()
@@ -159,7 +159,7 @@ public abstract class AbstractCQLExecutionService extends AbstractControllerServ
                     support one on counter columns. If not set, no TTL is applied and the table's own default_time_to_live (if any) governs.""")
             .required(false)
             .expressionLanguageSupported(ExpressionLanguageScope.ENVIRONMENT)
-            .addValidator(StandardValidators.TIME_PERIOD_VALIDATOR)
+            .addValidator(TimeToLive.VALIDATOR)
             .build();
 
     /**

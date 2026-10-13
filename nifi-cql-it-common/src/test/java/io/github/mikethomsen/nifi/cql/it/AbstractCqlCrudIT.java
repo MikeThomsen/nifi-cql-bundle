@@ -132,6 +132,35 @@ public abstract class AbstractCqlCrudIT {
     }
 
     @Test
+    @DisplayName("A null field leaves its column untouched when nulls are unset, and clears it when they are written")
+    void testNullFieldIsUnsetOrWritten() {
+        final RecordSchema schema = getMessageSchema();
+        final Instant whenSent = Instant.parse("2026-01-02T03:04:05Z");
+        final QualifiedTableName table = new QualifiedTableName(null, "message");
+
+        final Map<String, Object> withMessage = new HashMap<>();
+        withMessage.put("sender", "null.handling");
+        withMessage.put("receiver", "jane.smith");
+        withMessage.put("message", "hello");
+        withMessage.put("when_sent", whenSent);
+        sessionProvider.insert(table, new MapRecord(schema, withMessage), Map.of(), WriteOverrides.NONE);
+
+        final Map<String, Object> withoutMessage = new HashMap<>(withMessage);
+        withoutMessage.put("message", null);
+        final MapRecord sparse = new MapRecord(schema, withoutMessage);
+        final String select = "select message from testspace.message where sender = 'null.handling'";
+
+        sessionProvider.insert(table, sparse, Map.of(), new WriteOverrides(null, null, true));
+        assertEquals("hello", session.execute(select).one().getString("message"));
+
+        sessionProvider.insert(table, List.of(sparse), Map.of(), CqlBatchType.UNLOGGED, new WriteOverrides(null, null, true));
+        assertEquals("hello", session.execute(select).one().getString("message"));
+
+        sessionProvider.insert(table, sparse, Map.of(), new WriteOverrides(null, null, false));
+        assertTrue(session.execute(select).one().isNull("message"));
+    }
+
+    @Test
     @DisplayName("Incrementing then decrementing a counter column produces the expected running total")
     void testIncrementAndDecrement() throws Exception {
         RecordField field1 = new RecordField("column_a", RecordFieldType.STRING.getDataType());
@@ -234,7 +263,7 @@ public abstract class AbstractCqlCrudIT {
 
         MapRecord record = new MapRecord(schema, rawRecord);
 
-        sessionProvider.insert(new QualifiedTableName(null, "message"), record, Map.of(), new WriteOverrides(Duration.ofSeconds(100), null));
+        sessionProvider.insert(new QualifiedTableName(null, "message"), record, Map.of(), new WriteOverrides(Duration.ofSeconds(100), null, false));
 
         // "when_sent" (the last clustering column) is deliberately omitted: sender + receiver alone
         // uniquely identify the single row this test wrote, and CQL allows a prefix of clustering
@@ -262,7 +291,7 @@ public abstract class AbstractCqlCrudIT {
 
         MapRecord record = new MapRecord(schema, rawRecord);
 
-        sessionProvider.insert(new QualifiedTableName(null, "message"), record, Map.of(), new WriteOverrides(null, "when_sent"));
+        sessionProvider.insert(new QualifiedTableName(null, "message"), record, Map.of(), new WriteOverrides(null, "when_sent", false));
 
         long writeTimeMicros = session.execute(
                 "select WRITETIME(message) as write_time from testspace.message where sender = 'timestamp.sender' and receiver = 'timestamp.receiver'")
@@ -294,7 +323,7 @@ public abstract class AbstractCqlCrudIT {
                 new MapRecord(schema, olderRawRecord),
                 new MapRecord(schema, newerRawRecord));
 
-        sessionProvider.insert(new QualifiedTableName(null, "message"), records, Map.of(), CqlBatchType.LOGGED, new WriteOverrides(null, "when_sent"));
+        sessionProvider.insert(new QualifiedTableName(null, "message"), records, Map.of(), CqlBatchType.LOGGED, new WriteOverrides(null, "when_sent", false));
 
         assertEquals(toEpochMicros(olderEventTime), writeTimeForBatchTimestampSender("older.receiver"));
         assertEquals(toEpochMicros(newerEventTime), writeTimeForBatchTimestampSender("newer.receiver"));
@@ -332,7 +361,7 @@ public abstract class AbstractCqlCrudIT {
         MapRecord record = new MapRecord(schema, map);
         List<String> updateKeys = List.of("sender", "receiver", "when_sent");
 
-        sessionProvider.update(new QualifiedTableName(null, "message"), record, Map.of(), updateKeys, UpdateMethod.SET, new WriteOverrides(null, "when_sent"));
+        sessionProvider.update(new QualifiedTableName(null, "message"), record, Map.of(), updateKeys, UpdateMethod.SET, new WriteOverrides(null, "when_sent", false));
 
         long writeTimeMicros = session.execute(String.format(
                 "select WRITETIME(message) as write_time from testspace.message where sender = 'update.timestamp.sender' "
@@ -370,7 +399,7 @@ public abstract class AbstractCqlCrudIT {
         // applied to a counter UPDATE, Cassandra/ScyllaDB would reject the statement outright regardless of
         // what value was supplied ("Cannot provide custom timestamp for a BATCH containing counters" /
         // similar), so not throwing here proves the override was correctly skipped before ever reading the field.
-        assertDoesNotThrow(() -> sessionProvider.update(new QualifiedTableName(null, "counter_test"), record, Map.of(), updateKeys, UpdateMethod.INCREMENT, new WriteOverrides(null, "column_a")));
+        assertDoesNotThrow(() -> sessionProvider.update(new QualifiedTableName(null, "counter_test"), record, Map.of(), updateKeys, UpdateMethod.INCREMENT, new WriteOverrides(null, "column_a", false)));
     }
 
     @Test
@@ -391,7 +420,7 @@ public abstract class AbstractCqlCrudIT {
         // statement outright ("Cannot set ttl on a counter column"), so simply not throwing here proves
         // the override was correctly skipped.
         assertDoesNotThrow(() -> sessionProvider.update(new QualifiedTableName(null, "counter_test"), record, Map.of(), updateKeys,
-                UpdateMethod.INCREMENT, new WriteOverrides(Duration.ofSeconds(100), null)));
+                UpdateMethod.INCREMENT, new WriteOverrides(Duration.ofSeconds(100), null, false)));
     }
 
     @Test

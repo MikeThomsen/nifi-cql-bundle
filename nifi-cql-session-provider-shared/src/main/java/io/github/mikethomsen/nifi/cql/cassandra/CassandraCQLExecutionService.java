@@ -71,6 +71,8 @@ import org.apache.nifi.avro.AvroTypeUtil;
 import org.apache.nifi.components.ConfigVerificationResult;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.PropertyValue;
+import org.apache.nifi.components.ValidationContext;
+import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.controller.ConfigurationContext;
 import org.apache.nifi.controller.VerifiableControllerService;
 import org.apache.nifi.logging.ComponentLog;
@@ -118,6 +120,7 @@ import io.github.mikethomsen.nifi.cql.api.service.CQLQueryCallback;
 import io.github.mikethomsen.nifi.cql.api.service.ContactPoints;
 import io.github.mikethomsen.nifi.cql.api.service.CqlStatements;
 import io.github.mikethomsen.nifi.cql.api.service.QueryOverrides;
+import io.github.mikethomsen.nifi.cql.api.service.TimeToLive;
 import io.github.mikethomsen.nifi.cql.api.service.WriteOverrides;
 import org.apache.nifi.ssl.SSLContextProvider;
 
@@ -137,7 +140,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -197,9 +199,27 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         return PROPERTY_DESCRIPTORS;
     }
 
+    /**
+     * Rejects a username without a password, or the reverse. Credentials are only sent when both are present,
+     * so half a pair would otherwise connect with none at all and look as if it had worked.
+     */
+    @Override
+    protected Collection<ValidationResult> customValidate(final ValidationContext context) {
+        final List<ValidationResult> results = new ArrayList<>(super.customValidate(context));
+
+        if (context.getProperty(USERNAME).isSet() != context.getProperty(PASSWORD).isSet()) {
+            results.add(new ValidationResult.Builder()
+                    .subject("Credentials")
+                    .valid(false)
+                    .explanation("Username and Password must be set together, or both left unset")
+                    .build());
+        }
+
+        return results;
+    }
+
     @OnEnabled
     public void onEnabled(final ConfigurationContext context) {
-        tableMetadataCache = new ConcurrentHashMap<>();
         connectToCassandra(context);
     }
 
@@ -216,7 +236,6 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         }
     }
 
-    private Map<QualifiedTableName, PrimaryKey> tableMetadataCache;
     private String defaultKeyspace;
 
     /**
@@ -233,6 +252,10 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
 
             final PropertyValue defaultTtlProperty = context.getProperty(DEFAULT_TTL).evaluateAttributeExpressions();
             this.defaultTtl = defaultTtlProperty.isSet() ? defaultTtlProperty.asDuration() : null;
+
+            // Recorded here rather than in buildSession, which verify() also calls: verifying a different
+            // keyspace must not change the one this enabled service resolves table names against.
+            this.defaultKeyspace = context.getProperty(KEYSPACE).evaluateAttributeExpressions().getValue();
 
             final CqlSession cqlSession = buildSession(context);
 
@@ -310,7 +333,6 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         final String datacenter = context.getProperty(DATACENTER).evaluateAttributeExpressions().getValue();
 
         final String sessionKeyspace = context.getProperty(KEYSPACE).evaluateAttributeExpressions().getValue();
-        this.defaultKeyspace = sessionKeyspace;
 
         final DriverConfigLoader propertyBasedLoader =
                 DriverConfigLoader.programmaticBuilder()
@@ -325,7 +347,13 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         CqlSessionBuilder builder = CqlSession.builder()
                 .addContactPoints(contactPoints);
 
-        if (StringUtils.isNotBlank(username) && StringUtils.isNotBlank(password)) {
+        // Validation requires the two together, but either may still come out blank once Expression Language
+        // is evaluated. Connecting anonymously in that case would hide the misconfiguration.
+        if (StringUtils.isBlank(username) != StringUtils.isBlank(password)) {
+            throw new IllegalArgumentException("Username and Password must both have a value, or both be unset");
+        }
+
+        if (StringUtils.isNotBlank(username)) {
             builder = builder.withAuthCredentials(username, password);
         }
 
@@ -443,32 +471,6 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         return ContactPoints.parse(contactPointList).stream()
                 .map(contactPoint -> new InetSocketAddress(contactPoint.host(), contactPoint.port()))
                 .collect(Collectors.toList());
-    }
-
-    private void cacheMetadata(QualifiedTableName table) {
-        final QualifiedTableName resolved = resolveKeyspace(table);
-        getLogger().debug("Fetching metadata for {}.{}", resolved.keyspace(), resolved.table());
-
-        if (!tableMetadataCache.containsKey(resolved)) {
-            getLogger().debug("Metadata for {}.{} not found, fetching from cluster.", resolved.keyspace(), resolved.table());
-            Optional<KeyspaceMetadata> keyspaceOpt = cassandraSession.getMetadata()
-                    .getKeyspace(resolved.keyspace());
-            if (keyspaceOpt.isEmpty()) {
-                throw new RuntimeException("Empty keyspace metadata");
-            }
-
-            KeyspaceMetadata keyspaceMetadata = keyspaceOpt.get();
-            Optional<TableMetadata> tableOpt = keyspaceMetadata.getTable(resolved.table());
-            if (tableOpt.isEmpty()) {
-                throw new RuntimeException("Empty table metadata");
-            }
-
-            TableMetadata metadata = tableOpt.get();
-            PrimaryKey tableInfo = convertTableMetadata(metadata);
-
-            tableMetadataCache.put(resolved, tableInfo);
-            getLogger().debug("Metadata fetched and cached for {}.{}", resolved.keyspace(), resolved.table());
-        }
     }
 
     private PrimaryKey convertTableMetadata(TableMetadata metadata) {
@@ -715,7 +717,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
 
     static Integer resolveTtlSeconds(final WriteOverrides overrides, final Duration defaultTtl) {
         final Duration ttl = overrides != null && overrides.ttl() != null ? overrides.ttl() : defaultTtl;
-        return ttl != null ? Math.toIntExact(ttl.toSeconds()) : null;
+        return ttl != null ? TimeToLive.toSeconds(ttl) : null;
     }
 
     static boolean hasTimestampOverride(final WriteOverrides overrides) {
@@ -822,7 +824,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             getLogger().debug("Executing CQL insert: {}{}", result.statement.getQuery(), valuesFragment(values));
         }
 
-        BoundStatement boundStatement = preparedStatement.bind(values);
+        BoundStatement boundStatement = bind(preparedStatement, values, overrides);
 
         try {
             cassandraSession.execute(boundStatement);
@@ -860,7 +862,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
                 getLogger().debug("Batch insert record {}{}", recordNumber, valuesFragment(values));
             }
 
-            builder.addStatement(preparedStatement.bind(values));
+            builder.addStatement(bind(preparedStatement, values, overrides));
         }
 
         try {
@@ -876,7 +878,14 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         final String qualifiedName = tableName.isQualified()
                 ? tableName.keyspace() + "." + tableName.table()
                 : tableName.table();
-        return  "cassandra://" + cassandraSession.getMetadata().getClusterName() + "." + qualifiedName;
+        return cassandraSession.getMetadata().getClusterName()
+                .map(clusterName -> transitScheme() + "://" + clusterName + "." + qualifiedName)
+                .orElse(transitScheme() + "://" + qualifiedName);
+    }
+
+    /** The scheme of {@link #getTransitUrl}, naming the kind of cluster a write went to. */
+    protected String transitScheme() {
+        return "cassandra";
     }
 
     /**
@@ -1058,7 +1067,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             getLogger().debug("Executing CQL {} update: {}{}", updateMethod, result.statement().getQuery(), valuesFragment(values));
         }
 
-        BoundStatement statement = preparedStatement.bind(values);
+        BoundStatement statement = bind(preparedStatement, values, overrides);
 
         try {
             cassandraSession.execute(statement);
@@ -1153,6 +1162,25 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
                                 + "2026-08-07T14:30:00Z, or a count of milliseconds since the epoch", text), e);
             }
         }
+    }
+
+    /**
+     * Binds a record's values, leaving each null one unset when the caller asked for that. An unset value is
+     * not sent, so the column keeps whatever it holds; a bound null deletes the column's value and leaves a
+     * tombstone. A primary key column cannot be unset, and the cluster rejects the statement if one is.
+     */
+    static BoundStatement bind(final PreparedStatement preparedStatement, final Object[] values, final WriteOverrides overrides) {
+        BoundStatement boundStatement = preparedStatement.bind(values);
+
+        if (overrides != null && overrides.unsetNulls()) {
+            for (int index = 0; index < values.length; index++) {
+                if (values[index] == null) {
+                    boundStatement = boundStatement.unset(index);
+                }
+            }
+        }
+
+        return boundStatement;
     }
 
     private Object evaluateOverride(Record record, RecordPath path) {
@@ -1310,7 +1338,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
                 getLogger().debug("Batch update record {}{}", recordNumber, valuesFragment(values));
             }
 
-            builder.addStatement(preparedStatement.bind(values));
+            builder.addStatement(bind(preparedStatement, values, overrides));
         }
 
         try {
@@ -1321,10 +1349,24 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         }
     }
 
+    /**
+     * Read from the driver's schema metadata on every call. The driver already holds that metadata in memory and
+     * refreshes it when the schema changes, so a second cache here could only go stale.
+     */
     @Override
     public PrimaryKey getMetadata(QualifiedTableName table) {
-        cacheMetadata(table);
-        return tableMetadataCache.get(resolveKeyspace(table));
+        final QualifiedTableName resolved = resolveKeyspace(table);
+        if (!resolved.isQualified()) {
+            throw new IllegalArgumentException("Table '" + table.table() + "' names no keyspace and the service has no Default Keyspace");
+        }
+
+        final KeyspaceMetadata keyspaceMetadata = cassandraSession.getMetadata().getKeyspace(resolved.keyspace())
+                .orElseThrow(() -> new IllegalArgumentException("Keyspace '" + resolved.keyspace() + "' was not found in the cluster"));
+        final TableMetadata tableMetadata = keyspaceMetadata.getTable(resolved.table())
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "Table '" + resolved.table() + "' was not found in keyspace '" + resolved.keyspace() + "'"));
+
+        return convertTableMetadata(tableMetadata);
     }
 
     @Override

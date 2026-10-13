@@ -33,6 +33,7 @@ import org.apache.nifi.annotation.documentation.UseCase;
 import org.apache.nifi.annotation.lifecycle.OnScheduled;
 import org.apache.nifi.annotation.lifecycle.OnShutdown;
 import org.apache.nifi.annotation.lifecycle.OnUnscheduled;
+import org.apache.nifi.components.AllowableValue;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.PropertyValue;
 import org.apache.nifi.components.ValidationContext;
@@ -60,6 +61,7 @@ import io.github.mikethomsen.nifi.cql.api.exception.QueryFailureException;
 import io.github.mikethomsen.nifi.cql.api.metadata.PrimaryKeyIdentifier;
 import io.github.mikethomsen.nifi.cql.api.metadata.QualifiedTableName;
 import io.github.mikethomsen.nifi.cql.api.service.CQLExecutionService;
+import io.github.mikethomsen.nifi.cql.api.service.TimeToLive;
 import io.github.mikethomsen.nifi.cql.api.service.WriteOverrides;
 import org.apache.nifi.util.StopWatch;
 
@@ -273,7 +275,7 @@ public class PutCQLRecord extends AbstractCQLProcessor {
                     default (if any) is used.""")
             .required(false)
             .expressionLanguageSupported(ExpressionLanguageScope.FLOWFILE_ATTRIBUTES)
-            .addValidator(StandardValidators.TIME_PERIOD_VALIDATOR)
+            .addValidator(TimeToLive.VALIDATOR)
             .build();
 
     static final PropertyDescriptor TIMESTAMP_FIELD = new PropertyDescriptor.Builder()
@@ -290,9 +292,25 @@ public class PutCQLRecord extends AbstractCQLProcessor {
             .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
             .build();
 
+    static final AllowableValue NULLS_UNSET = new AllowableValue("UNSET", "Leave unset",
+            "A null field is not written. Its column keeps whatever value it already holds, and no tombstone is created.");
+    static final AllowableValue NULLS_WRITE = new AllowableValue("NULL", "Write null",
+            "A null field is written as a CQL null, which deletes the column's value and leaves a tombstone.");
+
+    static final PropertyDescriptor NULL_VALUE_HANDLING = new PropertyDescriptor.Builder()
+            .name("Null Value Handling")
+            .description("""
+                    What to do with a record field whose value is null. Cassandra and ScyllaDB treat a null written to a \
+                    column as a delete of that column's value, recorded as a tombstone; a value left unset is simply not \
+                    written. A primary key column can be neither null nor unset, so a null there fails the FlowFile either way.""")
+            .required(true)
+            .allowableValues(NULLS_UNSET, NULLS_WRITE)
+            .defaultValue(NULLS_UNSET.getValue())
+            .build();
+
     private static final List<PropertyDescriptor> PROPERTY_DESCRIPTORS = Collections.unmodifiableList(Arrays.asList(
             CONNECTION_PROVIDER_SERVICE, TABLE, STATEMENT_TYPE, UPDATE_KEYS, UPDATE_METHOD,
-            RECORD_READER_FACTORY, BATCH_SIZE, BATCH_STATEMENT_TYPE, TTL, TIMESTAMP_FIELD));
+            RECORD_READER_FACTORY, BATCH_SIZE, BATCH_STATEMENT_TYPE, TTL, TIMESTAMP_FIELD, NULL_VALUE_HANDLING));
 
     private static final Set<Relationship> RELATIONSHIPS = Collections.unmodifiableSet(
             new HashSet<>(Arrays.asList(REL_SUCCESS, REL_FAILURE, REL_RETRY)));
@@ -428,8 +446,7 @@ public class PutCQLRecord extends AbstractCQLProcessor {
 
             if (StringUtils.isBlank(batchStatementTypeAttr)) {
                 getLogger().error("Batch Statement Type is not specified, FlowFile {}", inputFlowFile);
-                session.penalize(inputFlowFile);
-                session.transfer(inputFlowFile, REL_FAILURE);
+                session.transfer(session.penalize(session.putAttribute(inputFlowFile, RECORDS_WRITTEN_ATTRIBUTE, "0")), REL_FAILURE);
                 return;
             }
 
@@ -442,7 +459,8 @@ public class PutCQLRecord extends AbstractCQLProcessor {
         final PropertyValue timestampFieldProperty = context.getProperty(TIMESTAMP_FIELD).evaluateAttributeExpressions(inputFlowFile);
         final String timestampField = timestampFieldProperty.isSet() ? timestampFieldProperty.getValue() : null;
 
-        final WriteOverrides writeOverrides = new WriteOverrides(ttlOverride, timestampField);
+        final boolean unsetNulls = NULLS_UNSET.getValue().equals(context.getProperty(NULL_VALUE_HANDLING).getValue());
+        final WriteOverrides writeOverrides = new WriteOverrides(ttlOverride, timestampField, unsetNulls);
 
         final AtomicInteger recordsAdded = new AtomicInteger(0);
         final StopWatch stopWatch = new StopWatch(true);
@@ -454,6 +472,11 @@ public class PutCQLRecord extends AbstractCQLProcessor {
 
             if (StringUtils.isEmpty(statementType)) {
                 throw new IllegalArgumentException(format("Statement Type is not specified, FlowFile %s", inputFlowFile));
+            }
+
+            // An attribute-supplied type that is neither INSERT nor UPDATE is a mistake, not a request to insert.
+            if (!INSERT_TYPE.getValue().equalsIgnoreCase(statementType) && !UPDATE_TYPE.getValue().equalsIgnoreCase(statementType)) {
+                throw new IllegalArgumentException(format("Statement Type '%s' is not INSERT or UPDATE, FlowFile %s", statementType, inputFlowFile));
             }
 
             if (UPDATE_TYPE.getValue().equalsIgnoreCase(statementType) && StringUtils.isEmpty(updateKeys)) {

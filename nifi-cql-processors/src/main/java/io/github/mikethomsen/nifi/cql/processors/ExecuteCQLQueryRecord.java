@@ -169,7 +169,7 @@ public class ExecuteCQLQueryRecord extends AbstractCQLProcessor {
                     configured Fetch Size is used.""")
             .required(false)
             .expressionLanguageSupported(ExpressionLanguageScope.FLOWFILE_ATTRIBUTES)
-            .addValidator(StandardValidators.INTEGER_VALIDATOR)
+            .addValidator(StandardValidators.NON_NEGATIVE_INTEGER_VALIDATOR)
             .build();
 
     static final PropertyDescriptor MAX_ROWS_PER_FLOW_FILE = new PropertyDescriptor.Builder()
@@ -180,7 +180,7 @@ public class ExecuteCQLQueryRecord extends AbstractCQLProcessor {
             .defaultValue("0")
             .required(true)
             .expressionLanguageSupported(ExpressionLanguageScope.ENVIRONMENT)
-            .addValidator(StandardValidators.INTEGER_VALIDATOR)
+            .addValidator(StandardValidators.NON_NEGATIVE_INTEGER_VALIDATOR)
             .build();
 
     static final PropertyDescriptor OUTPUT_BATCH_SIZE = new PropertyDescriptor.Builder()

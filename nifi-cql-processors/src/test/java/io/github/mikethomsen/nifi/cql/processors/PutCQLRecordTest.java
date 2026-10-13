@@ -61,6 +61,7 @@ import static org.mockito.Mockito.anyMap;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -71,6 +72,10 @@ public class PutCQLRecordTest {
     // type because it is part of the service call they verify, so they refer to this rather than repeating a
     // literal. testDefaultBatchStatementType is the one test that actually asserts what the default is.
     private static final CqlBatchType DEFAULT_BATCH_TYPE = CqlBatchType.UNLOGGED;
+
+    // What the processor passes when Time To Live and Timestamp Field are unset: no overrides, and nulls left
+    // unset, which is the Null Value Handling default.
+    private static final WriteOverrides DEFAULT_OVERRIDES = new WriteOverrides(null, null, true);
 
     private TestRunner runner;
     private CQLExecutionService service;
@@ -116,7 +121,7 @@ public class PutCQLRecordTest {
         runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_SUCCESS, 1);
 
         verify(service, times(batchCount))
-                .insert(eq(new QualifiedTableName(null, "message")), anyList(), anyMap(), eq(DEFAULT_BATCH_TYPE), eq(WriteOverrides.NONE));
+                .insert(eq(new QualifiedTableName(null, "message")), anyList(), anyMap(), eq(DEFAULT_BATCH_TYPE), eq(DEFAULT_OVERRIDES));
     }
 
     @Test
@@ -150,7 +155,7 @@ public class PutCQLRecordTest {
 
         verify(service, times(batchCount))
                 .update(eq(new QualifiedTableName(null, "message")), anyList(), anyMap(), eq(List.of("sender")), eq(updateMethod),
-                        eq(CqlBatchType.valueOf(batchStatementType)), eq(WriteOverrides.NONE));
+                        eq(CqlBatchType.valueOf(batchStatementType)), eq(DEFAULT_OVERRIDES));
     }
 
     @Test
@@ -168,7 +173,7 @@ public class PutCQLRecordTest {
         runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_SUCCESS, 1);
 
         verify(service, times(1))
-                .update(eq(new QualifiedTableName(null, "message")), anyList(), anyMap(), eq(List.of("sender")), eq(UpdateMethod.SET), eq(DEFAULT_BATCH_TYPE), eq(WriteOverrides.NONE));
+                .update(eq(new QualifiedTableName(null, "message")), anyList(), anyMap(), eq(List.of("sender")), eq(UpdateMethod.SET), eq(DEFAULT_BATCH_TYPE), eq(DEFAULT_OVERRIDES));
     }
 
     @Test
@@ -185,7 +190,7 @@ public class PutCQLRecordTest {
         runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_SUCCESS, 1);
 
         verify(service, times(1))
-                .insert(eq(new QualifiedTableName(null, "message")), anyList(), anyMap(), eq(DEFAULT_BATCH_TYPE), eq(new WriteOverrides(Duration.ofHours(1), null)));
+                .insert(eq(new QualifiedTableName(null, "message")), anyList(), anyMap(), eq(DEFAULT_BATCH_TYPE), eq(new WriteOverrides(Duration.ofHours(1), null, true)));
     }
 
     @Test
@@ -205,7 +210,81 @@ public class PutCQLRecordTest {
 
         verify(service, times(1))
                 .update(eq(new QualifiedTableName(null, "message")), anyList(), anyMap(), eq(List.of("sender")), eq(UpdateMethod.SET),
-                        eq(DEFAULT_BATCH_TYPE), eq(new WriteOverrides(Duration.ofMinutes(30), null)));
+                        eq(DEFAULT_BATCH_TYPE), eq(new WriteOverrides(Duration.ofMinutes(30), null, true)));
+    }
+
+    @ParameterizedTest(name = "Null Value Handling={0}, unset nulls={1}")
+    @DisplayName("Null Value Handling is passed to the service, leaving nulls unset unless told to write them")
+    @CsvSource({",true", "UNSET,true", "NULL,false"})
+    void testNullValueHandlingIsPassedToService(final String nullValueHandling, final boolean unsetNulls) {
+        if (nullValueHandling != null) {
+            runner.setProperty(PutCQLRecord.NULL_VALUE_HANDLING, nullValueHandling);
+        }
+
+        mockReader.addRecord("Hello, world", "test_user");
+
+        runner.enqueue("");
+        runner.run();
+
+        verify(service, times(1))
+                .insert(eq(new QualifiedTableName(null, "message")), anyList(), anyMap(), eq(DEFAULT_BATCH_TYPE), eq(new WriteOverrides(null, null, unsetNulls)));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @DisplayName("A Time To Live under one second is invalid, since CQL would read it as no expiry at all")
+    @CsvSource({"500 ms,false", "0 sec,false", "1 sec,true", "1500 ms,true"})
+    void testTtlMustBeAtLeastOneSecond(final String ttl, final boolean valid) {
+        runner.setProperty(PutCQLRecord.TTL, ttl);
+
+        if (valid) {
+            runner.assertValid();
+        } else {
+            runner.assertNotValid();
+        }
+    }
+
+    @Test
+    @DisplayName("A Time To Live that Expression Language resolves to under one second routes to failure")
+    void testTtlFromAttributeUnderOneSecondRoutesToFailure() {
+        runner.setProperty(PutCQLRecord.TTL, "${ttl}");
+        doThrow(new IllegalArgumentException("A Time To Live must be at least 1 second"))
+                .when(service).insert(any(QualifiedTableName.class), anyList(), anyMap(), any(CqlBatchType.class), any(WriteOverrides.class));
+
+        mockReader.addRecord("Hello, world", "test_user");
+
+        runner.enqueue("", Map.of("ttl", "500 ms"));
+        runner.run();
+
+        runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_FAILURE, 1);
+    }
+
+    @Test
+    @DisplayName("A cql.statement.type attribute that is neither INSERT nor UPDATE routes to failure instead of inserting")
+    void testUnrecognizedStatementTypeAttributeRoutesToFailure() {
+        runner.setProperty(PutCQLRecord.STATEMENT_TYPE, "USE_ATTR");
+
+        mockReader.addRecord("Hello, world", "test_user");
+
+        runner.enqueue("", Map.of("cql.statement.type", "DELETE"));
+        runner.run();
+
+        runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_FAILURE, 1);
+        runner.getFlowFilesForRelationship(PutCQLRecord.REL_FAILURE).getFirst().assertAttributeEquals("cql.records.written", "0");
+        verify(service, never()).insert(any(QualifiedTableName.class), anyList(), anyMap(), any(CqlBatchType.class), any(WriteOverrides.class));
+    }
+
+    @Test
+    @DisplayName("A missing cql.batch.statement.type attribute routes to failure reporting zero records written")
+    void testMissingBatchStatementTypeAttributeReportsZeroRecordsWritten() {
+        runner.setProperty(PutCQLRecord.BATCH_STATEMENT_TYPE, "USE_ATTR");
+
+        mockReader.addRecord("Hello, world", "test_user");
+
+        runner.enqueue("");
+        runner.run();
+
+        runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_FAILURE, 1);
+        runner.getFlowFilesForRelationship(PutCQLRecord.REL_FAILURE).getFirst().assertAttributeEquals("cql.records.written", "0");
     }
 
     @Test
@@ -222,7 +301,7 @@ public class PutCQLRecordTest {
         runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_SUCCESS, 1);
 
         verify(service, times(1))
-                .insert(eq(new QualifiedTableName(null, "message")), anyList(), anyMap(), eq(DEFAULT_BATCH_TYPE), eq(new WriteOverrides(null, "sender")));
+                .insert(eq(new QualifiedTableName(null, "message")), anyList(), anyMap(), eq(DEFAULT_BATCH_TYPE), eq(new WriteOverrides(null, "sender", true)));
     }
 
     @Test
@@ -443,7 +522,7 @@ public class PutCQLRecordTest {
 
         final ArgumentCaptor<Map<PrimaryKeyIdentifier, RecordPath>> captor = ArgumentCaptor.forClass(Map.class);
         verify(service).insert(eq(new QualifiedTableName("my_keyspace", "message")), anyList(), captor.capture(),
-                eq(DEFAULT_BATCH_TYPE), eq(WriteOverrides.NONE));
+                eq(DEFAULT_BATCH_TYPE), eq(DEFAULT_OVERRIDES));
 
         final Map<PrimaryKeyIdentifier, RecordPath> overrides = captor.getValue();
         final PrimaryKeyIdentifier identifier = new PrimaryKeyIdentifier("my_keyspace", "message", "id");
@@ -469,7 +548,7 @@ public class PutCQLRecordTest {
 
         final ArgumentCaptor<Map<PrimaryKeyIdentifier, RecordPath>> captor = ArgumentCaptor.forClass(Map.class);
         verify(service).insert(eq(new QualifiedTableName("my_keyspace", "message")), anyList(), captor.capture(),
-                eq(DEFAULT_BATCH_TYPE), eq(WriteOverrides.NONE));
+                eq(DEFAULT_BATCH_TYPE), eq(DEFAULT_OVERRIDES));
 
         final Map<PrimaryKeyIdentifier, RecordPath> overrides = captor.getValue();
         assertEquals(2, overrides.size());
@@ -493,7 +572,7 @@ public class PutCQLRecordTest {
 
         final ArgumentCaptor<Map<PrimaryKeyIdentifier, RecordPath>> captor = ArgumentCaptor.forClass(Map.class);
         verify(service).insert(eq(new QualifiedTableName("my_keyspace", "message")), anyList(), captor.capture(),
-                eq(DEFAULT_BATCH_TYPE), eq(WriteOverrides.NONE));
+                eq(DEFAULT_BATCH_TYPE), eq(DEFAULT_OVERRIDES));
 
         assertTrue(captor.getValue().isEmpty());
     }
@@ -516,7 +595,7 @@ public class PutCQLRecordTest {
 
         final ArgumentCaptor<Map<PrimaryKeyIdentifier, RecordPath>> captor = ArgumentCaptor.forClass(Map.class);
         verify(service).insert(eq(new QualifiedTableName(null, "message")), anyList(), captor.capture(),
-                eq(DEFAULT_BATCH_TYPE), eq(WriteOverrides.NONE));
+                eq(DEFAULT_BATCH_TYPE), eq(DEFAULT_OVERRIDES));
 
         assertTrue(captor.getValue().isEmpty());
     }
@@ -539,7 +618,7 @@ public class PutCQLRecordTest {
 
         final ArgumentCaptor<Map<PrimaryKeyIdentifier, RecordPath>> captor = ArgumentCaptor.forClass(Map.class);
         verify(service).update(eq(new QualifiedTableName("my_keyspace", "message")), anyList(), captor.capture(),
-                eq(List.of("sender")), eq(UpdateMethod.SET), eq(DEFAULT_BATCH_TYPE), eq(WriteOverrides.NONE));
+                eq(List.of("sender")), eq(UpdateMethod.SET), eq(DEFAULT_BATCH_TYPE), eq(DEFAULT_OVERRIDES));
 
         final Map<PrimaryKeyIdentifier, RecordPath> overrides = captor.getValue();
         final PrimaryKeyIdentifier identifier = new PrimaryKeyIdentifier("my_keyspace", "message", "id");
