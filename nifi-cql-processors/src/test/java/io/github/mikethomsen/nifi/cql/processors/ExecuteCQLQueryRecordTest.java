@@ -17,6 +17,7 @@
 
 package io.github.mikethomsen.nifi.cql.processors;
 
+import org.apache.nifi.controller.ControllerService;
 import org.apache.nifi.flowfile.attributes.FragmentAttributes;
 import io.github.mikethomsen.nifi.cql.processors.mock.FailingRecordSetWriterFactory;
 import io.github.mikethomsen.nifi.cql.processors.mock.MockCQLQueryExecutionService;
@@ -78,7 +79,6 @@ public class ExecuteCQLQueryRecordTest {
         testRunner.setProperty(ExecuteCQLQueryRecord.MAX_ROWS_PER_FLOW_FILE, String.valueOf(rowsPerFlowFile));
         testRunner.setProperty(ExecuteCQLQueryRecord.OUTPUT_BATCH_SIZE, String.valueOf(outputBatchSize));
 
-        MockRecordWriter parser = new MockRecordWriter();
         RecordField field1 = new RecordField("a", RecordFieldType.STRING.getDataType());
         RecordField field2 = new RecordField("b", RecordFieldType.STRING.getDataType());
         SimpleRecordSchema schema = new SimpleRecordSchema(List.of(field1, field2));
@@ -93,12 +93,7 @@ public class ExecuteCQLQueryRecordTest {
 
         MockCQLQueryExecutionService service = new MockCQLQueryExecutionService(data.iterator());
 
-        testRunner.setProperty(ExecuteCQLQueryRecord.CONNECTION_PROVIDER_SERVICE, "connection");
-        testRunner.addControllerService("connection", service);
-        testRunner.enableControllerService(service);
-        testRunner.setProperty(ExecuteCQLQueryRecord.OUTPUT_WRITER, "writer");
-        testRunner.addControllerService("writer", parser);
-        testRunner.enableControllerService(parser);
+        registerServices(service, new MockRecordWriter());
         testRunner.assertValid();
 
         testRunner.enqueue("parent_file");
@@ -143,8 +138,17 @@ public class ExecuteCQLQueryRecordTest {
         assertEquals(0, recordsRemaining);
     }
 
+    /** Registers and enables the connection service and record writer, and points the processor at them. */
+    private void registerServices(final MockCQLQueryExecutionService service, final ControllerService writer) throws Exception {
+        testRunner.setProperty(ExecuteCQLQueryRecord.CONNECTION_PROVIDER_SERVICE, "connection");
+        testRunner.addControllerService("connection", service);
+        testRunner.enableControllerService(service);
+        testRunner.setProperty(ExecuteCQLQueryRecord.OUTPUT_WRITER, "writer");
+        testRunner.addControllerService("writer", writer);
+        testRunner.enableControllerService(writer);
+    }
+
     private MockCQLQueryExecutionService configureServices() throws Exception {
-        MockRecordWriter parser = new MockRecordWriter();
         RecordField field1 = new RecordField("a", RecordFieldType.STRING.getDataType());
         SimpleRecordSchema schema = new SimpleRecordSchema(List.of(field1));
 
@@ -153,12 +157,7 @@ public class ExecuteCQLQueryRecordTest {
 
         MockCQLQueryExecutionService service = new MockCQLQueryExecutionService(data.iterator());
 
-        testRunner.setProperty(ExecuteCQLQueryRecord.CONNECTION_PROVIDER_SERVICE, "connection");
-        testRunner.addControllerService("connection", service);
-        testRunner.enableControllerService(service);
-        testRunner.setProperty(ExecuteCQLQueryRecord.OUTPUT_WRITER, "writer");
-        testRunner.addControllerService("writer", parser);
-        testRunner.enableControllerService(parser);
+        registerServices(service, new MockRecordWriter());
 
         return service;
     }
@@ -199,12 +198,7 @@ public class ExecuteCQLQueryRecordTest {
         final MockCQLQueryExecutionService service =
                 new MockCQLQueryExecutionService(data.iterator()).failAfter(rowsBeforeFailure);
 
-        testRunner.setProperty(ExecuteCQLQueryRecord.CONNECTION_PROVIDER_SERVICE, "connection");
-        testRunner.addControllerService("connection", service);
-        testRunner.enableControllerService(service);
-        testRunner.setProperty(ExecuteCQLQueryRecord.OUTPUT_WRITER, "writer");
-        testRunner.addControllerService("writer", writer);
-        testRunner.enableControllerService(writer);
+        registerServices(service, writer);
         testRunner.assertValid();
 
         testRunner.enqueue("parent_file");
@@ -233,13 +227,7 @@ public class ExecuteCQLQueryRecordTest {
         final MockCQLQueryExecutionService service =
                 new MockCQLQueryExecutionService(Collections.<Record>emptyList().iterator()).failAfter(0);
 
-        testRunner.setProperty(ExecuteCQLQueryRecord.CONNECTION_PROVIDER_SERVICE, "connection");
-        testRunner.addControllerService("connection", service);
-        testRunner.enableControllerService(service);
-        testRunner.setProperty(ExecuteCQLQueryRecord.OUTPUT_WRITER, "writer");
-        final MockRecordWriter writer = new MockRecordWriter();
-        testRunner.addControllerService("writer", writer);
-        testRunner.enableControllerService(writer);
+        registerServices(service, new MockRecordWriter());
         testRunner.assertValid();
 
         testRunner.setIncomingConnection(false);
@@ -279,6 +267,40 @@ public class ExecuteCQLQueryRecordTest {
         testRunner.assertTransferCount(ExecuteCQLQueryRecord.REL_SUCCESS, 0);
         testRunner.assertTransferCount(ExecuteCQLQueryRecord.REL_ORIGINAL, 0);
         testRunner.assertTransferCount(ExecuteCQLQueryRecord.REL_RETRY, 0);
+    }
+
+    private void useRejectingService(final RuntimeException rejection) throws Exception {
+        final MockCQLQueryExecutionService service =
+                new MockCQLQueryExecutionService(Collections.<Record>emptyList().iterator()).rejectWith(rejection);
+
+        registerServices(service, new MockRecordWriter());
+        testRunner.assertValid();
+    }
+
+    @Test
+    @DisplayName("Verify that a statement the service rejects with an unchecked exception routes to failure instead of rolling back")
+    public void testRejectedStatementRoutesToFailure() throws Exception {
+        // Not a ProcessException: a real service surfaces an unknown table or a parameter mismatch with the
+        // driver's own unchecked exception, or an IllegalArgumentException, thrown before any row is read.
+        useRejectingService(new IllegalArgumentException("unconfigured table no_such_table"));
+
+        testRunner.enqueue("");
+        testRunner.run();
+
+        testRunner.assertAllFlowFilesTransferred(ExecuteCQLQueryRecord.REL_FAILURE, 1);
+        testRunner.assertQueueEmpty();
+    }
+
+    @Test
+    @DisplayName("Verify that a rejected statement with no incoming connection yields rather than throwing")
+    public void testSourceModeRejectedStatementYields() throws Exception {
+        useRejectingService(new IllegalArgumentException("unconfigured table no_such_table"));
+
+        testRunner.setIncomingConnection(false);
+        testRunner.run();
+
+        testRunner.assertTransferCount(ExecuteCQLQueryRecord.REL_FAILURE, 0);
+        assertTrue(((org.apache.nifi.util.MockProcessContext) testRunner.getProcessContext()).isYieldCalled());
     }
 
     @Test
@@ -371,15 +393,9 @@ public class ExecuteCQLQueryRecordTest {
     public void testEmptyResultSetRoutesParentToOriginal() throws Exception {
         testRunner.setProperty(ExecuteCQLQueryRecord.MAX_ROWS_PER_FLOW_FILE, "5");
 
-        MockRecordWriter parser = new MockRecordWriter();
         MockCQLQueryExecutionService service = new MockCQLQueryExecutionService(Collections.<Record>emptyList().iterator());
 
-        testRunner.setProperty(ExecuteCQLQueryRecord.CONNECTION_PROVIDER_SERVICE, "connection");
-        testRunner.addControllerService("connection", service);
-        testRunner.enableControllerService(service);
-        testRunner.setProperty(ExecuteCQLQueryRecord.OUTPUT_WRITER, "writer");
-        testRunner.addControllerService("writer", parser);
-        testRunner.enableControllerService(parser);
+        registerServices(service, new MockRecordWriter());
         testRunner.assertValid();
 
         testRunner.enqueue("parent_file");
@@ -405,12 +421,7 @@ public class ExecuteCQLQueryRecordTest {
         MockCQLQueryExecutionService service = new MockCQLQueryExecutionService(data.iterator());
         FailingRecordSetWriterFactory writer = new FailingRecordSetWriterFactory();
 
-        testRunner.setProperty(ExecuteCQLQueryRecord.CONNECTION_PROVIDER_SERVICE, "connection");
-        testRunner.addControllerService("connection", service);
-        testRunner.enableControllerService(service);
-        testRunner.setProperty(ExecuteCQLQueryRecord.OUTPUT_WRITER, "writer");
-        testRunner.addControllerService("writer", writer);
-        testRunner.enableControllerService(writer);
+        registerServices(service, writer);
         testRunner.assertValid();
 
         testRunner.enqueue("parent_file");

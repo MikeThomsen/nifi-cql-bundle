@@ -381,7 +381,10 @@ public class ExecuteCQLQueryRecord extends AbstractCQLProcessor {
             } else {
                 context.yield();
             }
-        } catch (final ProcessException e) {
+        // Everything else, not only ProcessException: the service reports a statement the cluster rejects, or
+        // parameters that do not fit it, with the driver's own unchecked exceptions. Letting one escape would
+        // roll the session back and leave the same FlowFile at the head of the queue to fail again forever.
+        } catch (final RuntimeException e) {
             if (context.hasIncomingConnection()) {
                 logger.error(String.format("Unable to execute CQL select query %s for %s routing to failure",
                         selectQuery, fileToProcess), e);
