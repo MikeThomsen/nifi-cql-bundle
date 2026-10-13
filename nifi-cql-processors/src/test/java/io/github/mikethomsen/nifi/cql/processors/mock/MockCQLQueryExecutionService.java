@@ -58,6 +58,7 @@ public class MockCQLQueryExecutionService extends AbstractControllerService impl
     private String lastCql;
     private List<Object> lastParameters;
     private int rowsBeforeFailure = NEVER_FAIL;
+    private RuntimeException rejection;
 
     public MockCQLQueryExecutionService(Iterator<Record> records) {
         this.records = records;
@@ -72,6 +73,18 @@ public class MockCQLQueryExecutionService extends AbstractControllerService impl
      */
     public MockCQLQueryExecutionService failAfter(final int rowsBeforeFailure) {
         this.rowsBeforeFailure = rowsBeforeFailure;
+        return this;
+    }
+
+    /**
+     * Makes {@link #query} throw {@code rejection} before any row is read and outside its own error handling,
+     * the way a real implementation does when the cluster rejects the statement as it is prepared - an unknown
+     * table, a syntax error - or the parameters do not fit it.
+     *
+     * @return this service, for chaining onto the constructor
+     */
+    public MockCQLQueryExecutionService rejectWith(final RuntimeException rejection) {
+        this.rejection = rejection;
         return this;
     }
 
@@ -98,6 +111,10 @@ public class MockCQLQueryExecutionService extends AbstractControllerService impl
         this.lastQueryOverrides = overrides;
         this.lastCql = cql;
         this.lastParameters = parameters;
+
+        if (rejection != null) {
+            throw rejection;
+        }
 
         final boolean failing = rowsBeforeFailure != NEVER_FAIL;
 

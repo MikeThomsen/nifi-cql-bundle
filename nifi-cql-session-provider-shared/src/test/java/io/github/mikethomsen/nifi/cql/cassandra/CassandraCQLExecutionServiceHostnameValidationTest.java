@@ -16,34 +16,44 @@
  */
 package io.github.mikethomsen.nifi.cql.cassandra;
 
-import org.apache.nifi.components.PropertyDescriptor;
+import com.datastax.oss.driver.api.core.metadata.EndPoint;
+import com.datastax.oss.driver.api.core.ssl.SslEngineFactory;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+
+import java.net.InetSocketAddress;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
 
 import static io.github.mikethomsen.nifi.cql.api.service.AbstractCQLExecutionService.HOSTNAME_VALIDATION;
-import static io.github.mikethomsen.nifi.cql.api.service.AbstractCQLExecutionService.PROP_SSL_CONTEXT_SERVICE;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
- * Covers the Hostname Validation property: that the service exposes it, that it is on unless turned off, and
- * that it only applies once an SSL Context Service is set.
+ * Covers Hostname Validation where it takes effect: on the TLS engine the driver is handed for a node. An
+ * engine checks the certificate against the host only when it carries an endpoint identification algorithm.
  */
-public class CassandraCQLExecutionServiceHostnameValidationTest {
+class CassandraCQLExecutionServiceHostnameValidationTest {
 
-    @Test
-    void testServiceExposesHostnameValidation() {
-        assertTrue(new CassandraCQLExecutionService().getSupportedPropertyDescriptors().contains(HOSTNAME_VALIDATION));
+    @DisplayName("The TLS engine for a node checks the certificate's host only when Hostname Validation is on")
+    @ParameterizedTest(name = "hostname validation={0}, endpoint identification algorithm={1}")
+    @CsvSource(value = {"true,HTTPS", "false,"})
+    void testEngineIdentifiesEndpointOnlyWhenValidating(final boolean hostnameValidation, final String expectedAlgorithm) throws Exception {
+        final EndPoint node = mock(EndPoint.class);
+        when(node.resolve()).thenReturn(InetSocketAddress.createUnresolved("node1.example.com", 9042));
+
+        final SslEngineFactory factory = CassandraCQLExecutionService.sslEngineFactory(SSLContext.getDefault(), hostnameValidation);
+        final SSLEngine engine = factory.newSslEngine(node);
+
+        assertEquals(expectedAlgorithm, engine.getSSLParameters().getEndpointIdentificationAlgorithm());
     }
 
     @Test
+    @DisplayName("Hostname Validation is on unless it is turned off")
     void testHostnameValidationDefaultsToOn() {
         assertEquals("true", HOSTNAME_VALIDATION.getDefaultValue());
-    }
-
-    @Test
-    void testHostnameValidationDependsOnSslContextService() {
-        final boolean dependsOnSslContextService = HOSTNAME_VALIDATION.getDependencies().stream()
-                .anyMatch(dependency -> dependency.getPropertyName().equals(PROP_SSL_CONTEXT_SERVICE.getName()));
-        assertTrue(dependsOnSslContextService);
     }
 }

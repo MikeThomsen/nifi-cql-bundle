@@ -203,6 +203,11 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         connectToCassandra(context);
     }
 
+    /** Supplies the session directly, so a test can stand in for the cluster without connecting to one. */
+    void setSession(final CqlSession session) {
+        this.cassandraSession = session;
+    }
+
     @OnDisabled
     public void onDisabled() {
         if (cassandraSession != null) {
@@ -283,11 +288,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         if (sslContextProvider == null) {
             sslEngineFactory = null;
         } else {
-            // Built explicitly rather than through CqlSessionBuilder#withSslContext, which turns hostname
-            // validation off.
-            final SSLContext sslContext = sslContextProvider.createContext();
-            final boolean hostnameValidation = context.getProperty(HOSTNAME_VALIDATION).asBoolean();
-            sslEngineFactory = new ProgrammaticSslEngineFactory(sslContext, null, hostnameValidation);
+            sslEngineFactory = sslEngineFactory(sslContextProvider.createContext(), context.getProperty(HOSTNAME_VALIDATION).asBoolean());
         }
 
         final String username;
@@ -338,6 +339,14 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         }
 
         return builder.build();
+    }
+
+    /**
+     * Built explicitly rather than through {@code CqlSessionBuilder#withSslContext}, which turns hostname
+     * validation off.
+     */
+    static SslEngineFactory sslEngineFactory(final SSLContext sslContext, final boolean hostnameValidation) {
+        return new ProgrammaticSslEngineFactory(sslContext, null, hostnameValidation);
     }
 
     /**
@@ -667,11 +676,25 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         }
 
         final SimpleStatement statement = statementBuilder.build();
-        final PreparedStatement preparedStatement = cassandraSession.prepare(statement);
+        final PreparedStatement preparedStatement = prepare(statement);
 
         return parameters != null && !parameters.isEmpty()
                 ? preparedStatement.bind(toBindValues(preparedStatement, parameters))
                 : preparedStatement.bind();
+    }
+
+    /**
+     * Prepares a statement, reporting a cluster-level failure the same way execution does. A node can drop
+     * while a statement is being prepared just as it can while one is running, and a retry is as likely to
+     * fix it. A statement the cluster rejects as invalid is left to propagate, since a retry cannot fix that.
+     */
+    private PreparedStatement prepare(final SimpleStatement statement) throws QueryFailureException {
+        try {
+            return cassandraSession.prepare(statement);
+        } catch (QueryExecutionException | AllNodesFailedException | DriverTimeoutException e) {
+            getLogger().error("Error preparing statement", e);
+            throw new QueryFailureException();
+        }
     }
 
     static int resolveFetchSize(final QueryOverrides overrides, final int defaultFetchSize) {
@@ -788,7 +811,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
                         WriteOverrides overrides) throws QueryFailureException {
         final boolean useTimestampOverride = hasTimestampOverride(overrides);
         GeneratedResult result = generateInsert(table, record.getSchema(), primaryKeyOverrides, resolveTtlSeconds(overrides, defaultTtl), useTimestampOverride);
-        PreparedStatement preparedStatement = cassandraSession.prepare(result.statement);
+        PreparedStatement preparedStatement = prepare(result.statement);
 
         Object[] values = getBindValues(table, primaryKeyOverrides, record, preparedStatement, result.keysUsed);
         if (useTimestampOverride) {
@@ -819,7 +842,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         final boolean useTimestampOverride = hasTimestampOverride(overrides);
         BatchStatementBuilder builder = BatchStatement.builder(toDriverBatchType(batchType));
         GeneratedResult result = generateInsert(table, records.get(0).getSchema(), primaryKeyOverrides, resolveTtlSeconds(overrides, defaultTtl), useTimestampOverride);
-        PreparedStatement preparedStatement = cassandraSession.prepare(result.statement);
+        PreparedStatement preparedStatement = prepare(result.statement);
 
         if (getLogger().isDebugEnabled()) {
             getLogger().debug("Executing CQL {} batch insert of {} record(s): {}", batchType, records.size(), result.statement.getQuery());
@@ -1001,7 +1024,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
     public void delete(QualifiedTableName cassandraTable, Record record, Map<PrimaryKeyIdentifier, RecordPath> primaryKeyOverrides,
                         List<String> updateKeys) throws QueryFailureException {
         GeneratedResult result = generateDelete(cassandraTable, record, primaryKeyOverrides, updateKeys);
-        PreparedStatement preparedStatement = cassandraSession.prepare(result.statement());
+        PreparedStatement preparedStatement = prepare(result.statement());
 
         Object[] values = getBindValues(cassandraTable, primaryKeyOverrides, record, preparedStatement, result.keysUsed());
 
@@ -1024,7 +1047,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
                         List<String> updateKeys, UpdateMethod updateMethod, WriteOverrides overrides) throws QueryFailureException {
         final boolean useTimestampOverride = hasTimestampOverride(overrides) && updateMethod == UpdateMethod.SET;
         GeneratedResult result = generateUpdate(cassandraTable, record, primaryKeyOverrides, updateKeys, updateMethod, resolveTtlSeconds(overrides, defaultTtl), useTimestampOverride);
-        PreparedStatement preparedStatement = cassandraSession.prepare(result.statement());
+        PreparedStatement preparedStatement = prepare(result.statement());
 
         Object[] values = getBindValues(cassandraTable, primaryKeyOverrides, record, preparedStatement, result.keysUsed());
         if (useTimestampOverride) {
@@ -1269,7 +1292,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         BatchStatementBuilder builder = BatchStatement.builder(toDriverBatchType(batchType));
 
         GeneratedResult result = generateUpdate(cassandraTable, records.get(0), primaryKeyOverrides, updateKeys, updateMethod, resolveTtlSeconds(overrides, defaultTtl), useTimestampOverride);
-        PreparedStatement preparedStatement = cassandraSession.prepare(result.statement());
+        PreparedStatement preparedStatement = prepare(result.statement());
 
         if (getLogger().isDebugEnabled()) {
             getLogger().debug("Executing CQL {} batch {} update of {} record(s): {}", batchType, updateMethod, records.size(), result.statement().getQuery());
