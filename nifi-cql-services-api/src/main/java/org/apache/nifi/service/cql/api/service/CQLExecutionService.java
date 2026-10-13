@@ -19,6 +19,7 @@ package org.apache.nifi.service.cql.api.service;
 import org.apache.nifi.controller.ControllerService;
 import org.apache.nifi.record.path.RecordPath;
 import org.apache.nifi.service.cql.api.constants.CqlBatchType;
+import org.apache.nifi.service.cql.api.constants.CqlStatementType;
 import org.apache.nifi.service.cql.api.constants.UpdateMethod;
 import org.apache.nifi.service.cql.api.exception.QueryFailureException;
 import org.apache.nifi.service.cql.api.lookup.CqlStatementResult;
@@ -67,6 +68,23 @@ public interface CQLExecutionService extends ControllerService {
      * @throws QueryFailureException on a driver/server-level failure
      */
     CqlStatementResult execute(String cql, List<Object> parameters, QueryOverrides overrides) throws QueryFailureException;
+
+    /**
+     * Checks that {@code cql} is safe and sound to run as {@code expectedType} with {@code parameterCount}
+     * parameters, without running it. The text is checked first ({@link CqlStatements}): the statement must be
+     * of {@code expectedType}, and an {@code UPDATE} or {@code DELETE} must have a {@code WHERE} clause. The
+     * statement is then prepared against the cluster, which confirms that it parses and that every keyspace,
+     * table and column it names exists, and its bind-marker count must equal {@code parameterCount}.
+     *
+     * @param cql statement text with {@code ?} bind markers
+     * @param expectedType the kind of statement it must be
+     * @param parameterCount how many positional parameters the caller will supply
+     * @throws IllegalArgumentException if the statement is not of the expected type, is an unqualified
+     * {@code UPDATE}/{@code DELETE}, is rejected by the cluster as invalid, or has a different number of bind
+     * markers than {@code parameterCount}
+     * @throws QueryFailureException on a driver/server-level failure unrelated to the statement itself
+     */
+    void validateStatement(String cql, CqlStatementType expectedType, int parameterCount) throws QueryFailureException;
 
     /**
      * Writes one record to {@code table} via {@code INSERT}. Each field maps to the column of the same name,

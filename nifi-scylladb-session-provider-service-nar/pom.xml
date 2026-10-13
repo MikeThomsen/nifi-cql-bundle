@@ -54,6 +54,42 @@
                 <artifactId>nifi-nar-maven-plugin</artifactId>
                 <extensions>true</extensions>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>ban-cassandra-driver-dependencies</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <bannedDependencies>
+                                    <message>
+                                        This NAR runs on ScyllaDB's own fork of the DataStax driver
+                                        (com.scylladb:java-driver-core), supplied by the service module. The
+                                        shared module's dependency on the Apache Cassandra driver is
+                                        provided-scoped for exactly this reason, and must stay that way: no
+                                        Cassandra driver artifact may be bundled here, other than the query
+                                        builder, which ScyllaDB does not fork. Code shared with the Cassandra
+                                        service must use only the driver's core API (com.datastax.oss.driver).
+                                    </message>
+                                    <searchTransitive>true</searchTransitive>
+                                    <excludes>
+                                        <exclude>org.apache.cassandra:*</exclude>
+                                        <exclude>com.datastax.oss:*</exclude>
+                                        <exclude>com.datastax.cassandra:*</exclude>
+                                    </excludes>
+                                    <includes>
+                                        <include>org.apache.cassandra:java-driver-query-builder</include>
+                                    </includes>
+                                </bannedDependencies>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 </project>

@@ -25,6 +25,7 @@ import org.apache.nifi.serialization.record.RecordField;
 import org.apache.nifi.serialization.record.RecordFieldType;
 import org.apache.nifi.serialization.record.RecordSchema;
 import org.apache.nifi.service.cql.api.constants.CqlBatchType;
+import org.apache.nifi.service.cql.api.constants.CqlStatementType;
 import org.apache.nifi.service.cql.api.constants.UpdateMethod;
 import org.apache.nifi.service.cql.api.exception.QueryFailureException;
 import org.apache.nifi.service.cql.api.lookup.CqlRow;
@@ -591,5 +592,32 @@ public abstract class AbstractCqlCrudIT {
 
         assertTrue(result.rows().isEmpty());
         assertTrue(result.wasApplied(), "a plain SELECT is unconditional");
+    }
+
+    @Test
+    @DisplayName("validateStatement accepts a sound statement and rejects one that is the wrong type, unsafe, invalid or mis-parameterized")
+    void testValidateStatement() {
+        assertDoesNotThrow(() -> sessionProvider.validateStatement("select * from message where sender = ?", CqlStatementType.SELECT, 1));
+        assertDoesNotThrow(() -> sessionProvider.validateStatement(
+                "update message set message = ? where sender = ? and receiver = ? and when_sent = ?", CqlStatementType.UPDATE, 4));
+        assertDoesNotThrow(() -> sessionProvider.validateStatement(
+                "delete from message where sender = ? and receiver = ? and when_sent = ?", CqlStatementType.DELETE, 3));
+
+        // The text is not the kind of statement the caller said it was.
+        assertThrows(IllegalArgumentException.class, () -> sessionProvider.validateStatement(
+                "delete from message where sender = ?", CqlStatementType.SELECT, 1));
+        // An update or delete that would touch every row.
+        assertThrows(IllegalArgumentException.class, () -> sessionProvider.validateStatement(
+                "delete from message", CqlStatementType.DELETE, 0));
+        // Marker count does not match the parameters.
+        assertThrows(IllegalArgumentException.class, () -> sessionProvider.validateStatement(
+                "select * from message where sender = ?", CqlStatementType.SELECT, 2));
+        // The cluster itself rejects these: a table that does not exist, a column that does not exist, and a syntax error.
+        assertThrows(IllegalArgumentException.class, () -> sessionProvider.validateStatement(
+                "select * from no_such_table where sender = ?", CqlStatementType.SELECT, 1));
+        assertThrows(IllegalArgumentException.class, () -> sessionProvider.validateStatement(
+                "select * from message where no_such_column = ?", CqlStatementType.SELECT, 1));
+        assertThrows(IllegalArgumentException.class, () -> sessionProvider.validateStatement(
+                "select * frm message where sender = ?", CqlStatementType.SELECT, 1));
     }
 }
