@@ -35,6 +35,7 @@ import io.github.mikethomsen.nifi.cql.api.lookup.CqlRow;
 import io.github.mikethomsen.nifi.cql.api.lookup.CqlStatementResult;
 import io.github.mikethomsen.nifi.cql.api.service.CQLExecutionService;
 import io.github.mikethomsen.nifi.cql.api.service.QueryOverrides;
+import io.github.mikethomsen.nifi.cql.api.service.TimeToLive;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -120,7 +121,7 @@ public class CQLDistributedMapCache extends AbstractControllerService implements
                     + "that never expire. Applies to entries this service writes; it does not change entries already "
                     + "stored.")
             .required(false)
-            .addValidator(StandardValidators.TIME_PERIOD_VALIDATOR)
+            .addValidator(TimeToLive.VALIDATOR)
             .expressionLanguageSupported(ExpressionLanguageScope.ENVIRONMENT)
             .build();
 
@@ -180,7 +181,7 @@ public class CQLDistributedMapCache extends AbstractControllerService implements
 
         final PropertyValue ttlProperty = context.getProperty(TIME_TO_LIVE).evaluateAttributeExpressions();
         final Duration timeToLive = ttlProperty.isSet() ? ttlProperty.asDuration() : null;
-        final String usingTtl = timeToLive == null ? "" : " USING TTL " + timeToLive.toSeconds();
+        final String usingTtl = timeToLive == null ? "" : " USING TTL " + TimeToLive.toSeconds(timeToLive);
 
         putCql = "INSERT INTO " + table + " (" + keyColumn + ", " + valueColumn + ") VALUES (?, ?)" + usingTtl;
         putIfAbsentCql = "INSERT INTO " + table + " (" + keyColumn + ", " + valueColumn

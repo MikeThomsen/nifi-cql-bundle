@@ -357,6 +357,18 @@ public class ExecuteCQLQueryRecordTest {
         testRunner.assertNotValid();
     }
 
+    @ParameterizedTest(name = "{0}")
+    @DisplayName("Verify that a negative fetch size or row limit fails validation")
+    @CsvSource({"Fetch Size", "Max Rows Per Flow File"})
+    public void testNegativeSizeIsInvalid(final String propertyName) throws Exception {
+        configureServices();
+        testRunner.assertValid();
+
+        testRunner.setProperty(propertyName, "-1");
+
+        testRunner.assertNotValid();
+    }
+
     @Test
     @DisplayName("Verify that a dynamic property which is not a positional parameter is rejected outright")
     public void testUnrecognizedDynamicPropertyNameIsRejected() {
