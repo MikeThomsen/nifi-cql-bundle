@@ -71,6 +71,8 @@ import org.apache.nifi.avro.AvroTypeUtil;
 import org.apache.nifi.components.ConfigVerificationResult;
 import org.apache.nifi.components.PropertyDescriptor;
 import org.apache.nifi.components.PropertyValue;
+import org.apache.nifi.components.ValidationContext;
+import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.controller.ConfigurationContext;
 import org.apache.nifi.controller.VerifiableControllerService;
 import org.apache.nifi.logging.ComponentLog;
@@ -195,6 +197,25 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
     @Override
     public List<PropertyDescriptor> getSupportedPropertyDescriptors() {
         return PROPERTY_DESCRIPTORS;
+    }
+
+    /**
+     * Rejects a username without a password, or the reverse. Credentials are only sent when both are present,
+     * so half a pair would otherwise connect with none at all and look as if it had worked.
+     */
+    @Override
+    protected Collection<ValidationResult> customValidate(final ValidationContext context) {
+        final List<ValidationResult> results = new ArrayList<>(super.customValidate(context));
+
+        if (context.getProperty(USERNAME).isSet() != context.getProperty(PASSWORD).isSet()) {
+            results.add(new ValidationResult.Builder()
+                    .subject("Credentials")
+                    .valid(false)
+                    .explanation("Username and Password must be set together, or both left unset")
+                    .build());
+        }
+
+        return results;
     }
 
     @OnEnabled
@@ -325,7 +346,13 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         CqlSessionBuilder builder = CqlSession.builder()
                 .addContactPoints(contactPoints);
 
-        if (StringUtils.isNotBlank(username) && StringUtils.isNotBlank(password)) {
+        // Validation requires the two together, but either may still come out blank once Expression Language
+        // is evaluated. Connecting anonymously in that case would hide the misconfiguration.
+        if (StringUtils.isBlank(username) != StringUtils.isBlank(password)) {
+            throw new IllegalArgumentException("Username and Password must both have a value, or both be unset");
+        }
+
+        if (StringUtils.isNotBlank(username)) {
             builder = builder.withAuthCredentials(username, password);
         }
 
