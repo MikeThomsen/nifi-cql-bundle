@@ -369,6 +369,22 @@ public class ExecuteCQLQueryRecordTest {
         testRunner.assertNotValid();
     }
 
+    @ParameterizedTest(name = "{0} = {1}")
+    @DisplayName("Verify that a fetch size or query timeout attribute that does not parse routes to failure instead of leaving the FlowFile queued")
+    @CsvSource({"Fetch Size, lots", "Fetch Size, -5", "Max Wait Time, soon"})
+    public void testUnparseableOverrideFromAttributeRoutesToFailure(final String propertyName, final String value) throws Exception {
+        testRunner.setProperty(propertyName, "${override}");
+        MockCQLQueryExecutionService service = configureServices();
+        testRunner.assertValid();
+
+        testRunner.enqueue("", Map.of("override", value));
+        testRunner.run();
+
+        testRunner.assertAllFlowFilesTransferred(ExecuteCQLQueryRecord.REL_FAILURE, 1);
+        testRunner.assertQueueEmpty();
+        assertNull(service.getLastQueryOverrides());
+    }
+
     @Test
     @DisplayName("Verify that a dynamic property which is not a positional parameter is rejected outright")
     public void testUnrecognizedDynamicPropertyNameIsRejected() {

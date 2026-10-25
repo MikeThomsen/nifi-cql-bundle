@@ -50,6 +50,7 @@ import javax.security.auth.x500.X500Principal;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Every {@code verify()} scenario that needs a specially-provisioned server, against one container per
@@ -59,7 +60,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * runs them all through the same {@code verify()} path and the only thing that differed was server config.
  *
  * <p>The scenarios: a fully valid secure config succeeds every step; a wrong password and an untrusted
- * server certificate each fail {@code Establish Connection}; a bogus datacenter fails {@code Verify
+ * server certificate each fail {@code Establish Connection}, as does a trusted certificate that does not name
+ * the host connected to, unless Hostname Validation is off; a bogus datacenter fails {@code Verify
  * Datacenter} (the driver builds a session with an unknown local datacenter and only fails when a statement
  * forces node selection, which {@code verify()} does deliberately); an unknown keyspace fails {@code Verify
  * Keyspace}; and a syntactically valid driver configuration file still connects. The one-way-vs-two-way TLS
@@ -68,7 +70,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>Gated behind {@link ConnectionTest}: runs only when {@value ConnectionTest#ENABLED_PROPERTY} is
  * {@code true}, since a specially-configured container is a high price for coverage that a change to query
- * or write behaviour cannot affect.
+ * or write behaviour cannot affect. CI sets it, since these are the only tests of TLS and authentication
+ * against a real cluster.
  */
 @ConnectionTest
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -167,6 +170,26 @@ public abstract class AbstractCqlSecureVerificationIT {
     }
 
     @Test
+    @DisplayName("A trusted certificate that does not name the host connected to fails the connection step")
+    void testCertificateForAnotherHostFailsConnection() throws Exception {
+        final List<ConfigVerificationResult> results = verify(adminPassword, trustStoreFor(serverCertificate),
+                runner -> runner.withProperty(AbstractCQLExecutionService.CONTACT_POINTS, contactPointNotNamedByCertificate()));
+
+        assertStepFailed(results, "Establish Connection");
+    }
+
+    @Test
+    @DisplayName("With Hostname Validation off, the same certificate and address connect, so the failure above is the hostname check")
+    void testHostnameValidationOffAcceptsCertificateForAnotherHost() throws Exception {
+        final List<ConfigVerificationResult> results = verify(adminPassword, trustStoreFor(serverCertificate),
+                runner -> runner
+                        .withProperty(AbstractCQLExecutionService.CONTACT_POINTS, contactPointNotNamedByCertificate())
+                        .withProperty(AbstractCQLExecutionService.HOSTNAME_VALIDATION, "false"));
+
+        assertAllSuccessful(results);
+    }
+
+    @Test
     @DisplayName("A nonexistent datacenter fails the datacenter step, caught by the statement verify() forces")
     void testInvalidDatacenterFailsDatacenterStep() throws Exception {
         final List<ConfigVerificationResult> results = verify(adminPassword, trustStoreFor(serverCertificate),
@@ -224,6 +247,19 @@ public abstract class AbstractCqlSecureVerificationIT {
 
         customizer.accept(serviceRunner);
         return serviceRunner.verify();
+    }
+
+    /**
+     * The server's contact point under {@link OtherHostResolverProvider#OTHER_HOST}, which reaches the same
+     * container as localhost but is not a name the server certificate carries.
+     */
+    private String contactPointNotNamedByCertificate() {
+        final String contactPoint = server.contactPoint();
+        final String host = contactPoint.substring(0, contactPoint.lastIndexOf(':'));
+        assumeTrue("localhost".equals(host) || "127.0.0.1".equals(host),
+                "the container must be published on localhost for " + OtherHostResolverProvider.OTHER_HOST + " to reach it, but its host is " + host);
+
+        return OtherHostResolverProvider.OTHER_HOST + contactPoint.substring(contactPoint.lastIndexOf(':'));
     }
 
     private SslKeyStoreCredentials trustStoreFor(final X509Certificate certificate) throws Exception {

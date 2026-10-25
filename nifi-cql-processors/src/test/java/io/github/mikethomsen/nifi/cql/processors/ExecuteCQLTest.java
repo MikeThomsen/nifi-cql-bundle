@@ -251,6 +251,31 @@ public class ExecuteCQLTest {
     }
 
     @Test
+    @DisplayName("A Max Wait Time attribute that is not a duration routes to failure instead of leaving the FlowFile queued")
+    void testTimeoutFromAttributeThatDoesNotParse() {
+        runner.setProperty(ExecuteCQL.QUERY_TIMEOUT, "${timeout}");
+
+        runner.enqueue("", Map.of("id", "7", "timeout", "soon"));
+        runner.run();
+
+        runner.assertAllFlowFilesTransferred(ExecuteCQL.REL_FAILURE, 1);
+        runner.assertQueueEmpty();
+        verify(service, never()).query(anyString(), anyList(), any(CQLQueryCallback.class), any(QueryOverrides.class));
+    }
+
+    @Test
+    @DisplayName("A Fetch Size attribute below 1 routes to failure and the query is never run")
+    void testFetchSizeFromAttributeBelowOne() {
+        runner.setProperty(ExecuteCQL.FETCH_SIZE, "${fetch}");
+
+        runner.enqueue("", Map.of("id", "7", "fetch", "0"));
+        runner.run();
+
+        runner.assertAllFlowFilesTransferred(ExecuteCQL.REL_FAILURE, 1);
+        verify(service, never()).query(anyString(), anyList(), any(CQLQueryCallback.class), any(QueryOverrides.class));
+    }
+
+    @Test
     @DisplayName("A cluster error while validating routes to retry")
     void testClusterErrorWhileValidating() {
         doThrow(new QueryFailureException()).when(service).validateStatement(anyString(), any(), anyInt());

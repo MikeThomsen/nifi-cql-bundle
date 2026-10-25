@@ -453,14 +453,10 @@ public class PutCQLRecord extends AbstractCQLProcessor {
             batchStatementType = StringUtils.isBlank(batchStatementTypeAttr) ? null : batchStatementTypeAttr.toUpperCase();
         }
 
-        final PropertyValue ttlProperty = context.getProperty(TTL).evaluateAttributeExpressions(inputFlowFile);
-        final Duration ttlOverride = ttlProperty.isSet() ? ttlProperty.asDuration() : null;
-
         final PropertyValue timestampFieldProperty = context.getProperty(TIMESTAMP_FIELD).evaluateAttributeExpressions(inputFlowFile);
         final String timestampField = timestampFieldProperty.isSet() ? timestampFieldProperty.getValue() : null;
 
         final boolean unsetNulls = NULLS_UNSET.getValue().equals(context.getProperty(NULL_VALUE_HANDLING).getValue());
-        final WriteOverrides writeOverrides = new WriteOverrides(ttlOverride, timestampField, unsetNulls);
 
         final AtomicInteger recordsAdded = new AtomicInteger(0);
         final StopWatch stopWatch = new StopWatch(true);
@@ -469,6 +465,12 @@ public class PutCQLRecord extends AbstractCQLProcessor {
 
         try (final InputStream inputStream = session.read(inputFlowFile);
              final RecordReader reader = recordParserFactory.createRecordReader(inputFlowFile, inputStream, getLogger())) {
+
+            // Parsed inside the try: a TTL from a FlowFile attribute that does not parse must route that
+            // FlowFile to failure, not escape onTrigger and leave it at the head of the queue.
+            final PropertyValue ttlProperty = context.getProperty(TTL).evaluateAttributeExpressions(inputFlowFile);
+            final Duration ttlOverride = ttlProperty.isSet() ? ttlProperty.asDuration() : null;
+            final WriteOverrides writeOverrides = new WriteOverrides(ttlOverride, timestampField, unsetNulls);
 
             if (StringUtils.isEmpty(statementType)) {
                 throw new IllegalArgumentException(format("Statement Type is not specified, FlowFile %s", inputFlowFile));
