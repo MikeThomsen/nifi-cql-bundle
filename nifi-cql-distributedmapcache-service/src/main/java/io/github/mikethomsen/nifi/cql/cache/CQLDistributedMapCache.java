@@ -91,27 +91,30 @@ public class CQLDistributedMapCache extends AbstractControllerService implements
             .name("Table Name")
             .description("The table cache entries are stored in, as <keyspace>.<table> or as <table> to use the "
                     + "keyspace configured on the CQL Execution Service. The table must already exist; this service "
-                    + "does not create or alter schema.")
+                    + "does not create or alter schema. Each name is a CQL identifier: unquoted names are case-insensitive, "
+                    + "and a name with other characters or capitals that matter goes in double quotes.")
             .required(true)
-            .addValidator(StandardValidators.NON_BLANK_VALIDATOR)
+            .addValidator(CqlNames.TABLE_VALIDATOR)
             .expressionLanguageSupported(ExpressionLanguageScope.ENVIRONMENT)
             .build();
 
     public static final PropertyDescriptor KEY_COLUMN = new PropertyDescriptor.Builder()
             .name("Key Column Name")
-            .description("The table's partition key column, which must be of CQL type blob.")
+            .description("The table's partition key column, which must be of CQL type blob. A CQL identifier, quoted "
+                    + "in double quotes if it needs to be.")
             .required(true)
             .defaultValue("cache_key")
-            .addValidator(StandardValidators.NON_BLANK_VALIDATOR)
+            .addValidator(CqlNames.IDENTIFIER_VALIDATOR)
             .expressionLanguageSupported(ExpressionLanguageScope.ENVIRONMENT)
             .build();
 
     public static final PropertyDescriptor VALUE_COLUMN = new PropertyDescriptor.Builder()
             .name("Value Column Name")
-            .description("The column cache values are stored in, which must be of CQL type blob.")
+            .description("The column cache values are stored in, which must be of CQL type blob. A CQL identifier, "
+                    + "quoted in double quotes if it needs to be.")
             .required(true)
             .defaultValue("cache_value")
-            .addValidator(StandardValidators.NON_BLANK_VALIDATOR)
+            .addValidator(CqlNames.IDENTIFIER_VALIDATOR)
             .expressionLanguageSupported(ExpressionLanguageScope.ENVIRONMENT)
             .build();
 
@@ -150,8 +153,7 @@ public class CQLDistributedMapCache extends AbstractControllerService implements
             CQL_EXECUTION_SERVICE, TABLE_NAME, KEY_COLUMN, VALUE_COLUMN, TIME_TO_LIVE, STRICT_REMOVAL, MAX_VALUE_SIZE);
 
     private volatile CQLExecutionService executionService;
-    private volatile String table;
-    private volatile String keyColumn;
+    // The value column as the cluster names it in result rows, which is not always how it was written.
     private volatile String valueColumn;
     private volatile boolean strictRemoval;
     private volatile long maxValueSizeBytes;
@@ -173,9 +175,13 @@ public class CQLDistributedMapCache extends AbstractControllerService implements
     @OnEnabled
     public void onEnabled(final ConfigurationContext context) {
         executionService = context.getProperty(CQL_EXECUTION_SERVICE).asControllerService(CQLExecutionService.class);
-        table = context.getProperty(TABLE_NAME).evaluateAttributeExpressions().getValue().trim();
-        keyColumn = context.getProperty(KEY_COLUMN).evaluateAttributeExpressions().getValue().trim();
-        valueColumn = context.getProperty(VALUE_COLUMN).evaluateAttributeExpressions().getValue().trim();
+        // Names are spliced into statement text, so they are parsed as identifiers and written back quoted;
+        // the validators cannot check a value that comes from Expression Language until it is evaluated here.
+        final String table = String.join(".", CqlNames.parse(evaluatedName(context, TABLE_NAME), 2).stream()
+                .map(CqlNames::toCql).toList());
+        final String keyColumn = CqlNames.toCql(CqlNames.parse(evaluatedName(context, KEY_COLUMN), 1).getFirst());
+        valueColumn = CqlNames.parse(evaluatedName(context, VALUE_COLUMN), 1).getFirst();
+        final String valueColumnCql = CqlNames.toCql(valueColumn);
         strictRemoval = context.getProperty(STRICT_REMOVAL).asBoolean();
         maxValueSizeBytes = context.getProperty(MAX_VALUE_SIZE).asDataSize(org.apache.nifi.processor.DataUnit.B).longValue();
 
@@ -183,13 +189,17 @@ public class CQLDistributedMapCache extends AbstractControllerService implements
         final Duration timeToLive = ttlProperty.isSet() ? ttlProperty.asDuration() : null;
         final String usingTtl = timeToLive == null ? "" : " USING TTL " + TimeToLive.toSeconds(timeToLive);
 
-        putCql = "INSERT INTO " + table + " (" + keyColumn + ", " + valueColumn + ") VALUES (?, ?)" + usingTtl;
-        putIfAbsentCql = "INSERT INTO " + table + " (" + keyColumn + ", " + valueColumn
+        putCql = "INSERT INTO " + table + " (" + keyColumn + ", " + valueColumnCql + ") VALUES (?, ?)" + usingTtl;
+        putIfAbsentCql = "INSERT INTO " + table + " (" + keyColumn + ", " + valueColumnCql
                 + ") VALUES (?, ?) IF NOT EXISTS" + usingTtl;
-        fetchCql = "SELECT " + valueColumn + " FROM " + table + " WHERE " + keyColumn + " = ?";
+        fetchCql = "SELECT " + valueColumnCql + " FROM " + table + " WHERE " + keyColumn + " = ?";
         existsCql = "SELECT " + keyColumn + " FROM " + table + " WHERE " + keyColumn + " = ? LIMIT 1";
         deleteCql = "DELETE FROM " + table + " WHERE " + keyColumn + " = ?";
         strictDeleteCql = "DELETE FROM " + table + " WHERE " + keyColumn + " = ? IF EXISTS";
+    }
+
+    private static String evaluatedName(final ConfigurationContext context, final PropertyDescriptor property) {
+        return context.getProperty(property).evaluateAttributeExpressions().getValue().trim();
     }
 
     @OnDisabled
