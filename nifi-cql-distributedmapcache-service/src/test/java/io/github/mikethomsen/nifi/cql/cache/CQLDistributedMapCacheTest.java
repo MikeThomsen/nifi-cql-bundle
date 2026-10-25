@@ -349,8 +349,73 @@ class CQLDistributedMapCacheTest {
         put("k", "v");
 
         final String statement = cluster.executedStatements().getLast().cql();
-        assertTrue(statement.contains("(id, payload)"), statement);
+        assertTrue(statement.contains("(\"id\", \"payload\")"), statement);
         assertEquals("v", get("k"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"cache WHERE cache_key = 0x00", "ks.cache; DROP TABLE ks.other", "ks.cache -- comment",
+            "a.b.c", "ks.", "\"unterminated", "\"\"", "1cache"})
+    @DisplayName("A table name that is not one or two CQL identifiers is invalid, so it cannot add to a statement")
+    void testTableNameMustBeIdentifiers(final String tableName) throws Exception {
+        final TestRunner runner = runnerWithCache();
+        runner.setProperty(cache, CQLDistributedMapCache.TABLE_NAME, tableName);
+
+        runner.assertNotValid(cache);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"cache_value FROM ks.other WHERE x = ?", "ks.cache_value", "cache value", "\"a\"b\""})
+    @DisplayName("A column name that is not a single CQL identifier is invalid")
+    void testColumnNamesMustBeIdentifiers(final String columnName) throws Exception {
+        final TestRunner runner = runnerWithCache();
+        runner.setProperty(cache, CQLDistributedMapCache.TABLE_NAME, "ks.cache");
+        runner.setProperty(cache, CQLDistributedMapCache.KEY_COLUMN, columnName);
+        runner.assertNotValid(cache);
+
+        runner.setProperty(cache, CQLDistributedMapCache.KEY_COLUMN, "cache_key");
+        runner.setProperty(cache, CQLDistributedMapCache.VALUE_COLUMN, columnName);
+        runner.assertNotValid(cache);
+    }
+
+    @Test
+    @DisplayName("A name from Expression Language is checked when the cache is enabled")
+    void testNameFromExpressionLanguageIsCheckedOnEnable() throws Exception {
+        final TestRunner runner = runnerWithCache();
+        runner.setEnvironmentVariableValue("CACHE_TABLE", "ks.cache WHERE cache_key = 0x00");
+        runner.setProperty(cache, CQLDistributedMapCache.TABLE_NAME, "${CACHE_TABLE}");
+
+        assertThrows(Throwable.class, () -> runner.enableControllerService(cache));
+        assertTrue(cluster.executedStatements().isEmpty());
+    }
+
+    @Test
+    @DisplayName("Quoted names keep their case and characters, and unquoted ones are matched case-insensitively")
+    void testQuotedAndMixedCaseNames() throws Exception {
+        final TestRunner runner = runnerWithCache();
+        cluster.withColumns("Key \"One\"", "payload");
+        runner.setProperty(cache, CQLDistributedMapCache.TABLE_NAME, "\"My KS\".Cache");
+        runner.setProperty(cache, CQLDistributedMapCache.KEY_COLUMN, "\"Key \"\"One\"\"\"");
+        runner.setProperty(cache, CQLDistributedMapCache.VALUE_COLUMN, "Payload");
+        runner.enableControllerService(cache);
+
+        put("k", "v");
+
+        assertEquals("INSERT INTO \"My KS\".\"cache\" (\"Key \"\"One\"\"\", \"payload\") VALUES (?, ?)",
+                cluster.executedStatements().getLast().cql());
+        assertEquals("v", get("k"), "the value column is read back under the name the cluster gives it");
+    }
+
+    private TestRunner runnerWithCache() throws Exception {
+        final TestRunner runner = TestRunners.newTestRunner(new NoOpProcessor());
+        cluster = new FakeCQLExecutionService();
+        runner.addControllerService("cql", cluster);
+        runner.enableControllerService(cluster);
+
+        cache = new CQLDistributedMapCache();
+        runner.addControllerService("cache", cache);
+        runner.setProperty(cache, CQLDistributedMapCache.CQL_EXECUTION_SERVICE, "cql");
+        return runner;
     }
 
     @Test

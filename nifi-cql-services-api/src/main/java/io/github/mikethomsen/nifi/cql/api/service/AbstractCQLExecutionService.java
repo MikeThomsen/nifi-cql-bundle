@@ -176,7 +176,12 @@ public abstract class AbstractCQLExecutionService extends AbstractControllerServ
                     are not otherwise exposed as properties on this service. Settings in this file take \
                     precedence over the other connection properties configured here; any setting not \
                     present in the file falls back to those properties or the driver's built-in defaults. \
-                    ScyllaDB's Java Driver is a shard-aware fork of the DataStax Java Driver that reads the \
+                    The SSL Context Service, Hostname Validation, Username, Password and Cassandra Datacenter \
+                    properties, when set, cannot be overridden; when they are unset, the file can supply \
+                    its own TLS or authentication. Contact points in the file are added to the configured \
+                    ones. The file can load any driver plug-in class on NiFi's classpath and can include \
+                    other files and environment variables, so treat it like code: anyone who can edit it, \
+                    or this property, controls how the service connects. ScyllaDB's Java Driver is a shard-aware fork of the DataStax Java Driver that reads the \
                     same configuration format, so this file works unchanged when connecting to ScyllaDB.""")
             .required(false)
             .identifiesExternalResource(ResourceCardinality.SINGLE, ResourceType.FILE)
