@@ -340,13 +340,6 @@ public class ExecuteCQLQueryRecord extends AbstractCQLProcessor {
         final long maxRowsPerFlowFile = context.getProperty(MAX_ROWS_PER_FLOW_FILE).evaluateAttributeExpressions().asInteger();
         final long outputBatchSize = context.getProperty(OUTPUT_BATCH_SIZE).evaluateAttributeExpressions().asInteger();
 
-        final PropertyValue fetchSizeProperty = context.getProperty(FETCH_SIZE).evaluateAttributeExpressions(fileToProcess);
-        final Integer fetchSizeOverride = fetchSizeProperty.isSet() ? fetchSizeProperty.asInteger() : null;
-
-        final PropertyValue queryTimeoutProperty = context.getProperty(QUERY_TIMEOUT).evaluateAttributeExpressions(fileToProcess);
-        final Duration queryTimeoutOverride = queryTimeoutProperty.isSet() ? queryTimeoutProperty.asDuration() : null;
-
-        final QueryOverrides queryOverrides = new QueryOverrides(fetchSizeOverride, queryTimeoutOverride);
         final List<Object> queryParameters = getQueryParameters(context, fileToProcess);
 
         final StopWatch stopWatch = new StopWatch(true);
@@ -359,9 +352,20 @@ public class ExecuteCQLQueryRecord extends AbstractCQLProcessor {
                 getLogger(), maxRowsPerFlowFile, outputBatchSize);
 
         try {
+            // Parsed here rather than above: a value from a FlowFile attribute that does not parse must route
+            // that FlowFile to failure, not escape onTrigger and leave it at the head of the queue.
+            final PropertyValue fetchSizeProperty = context.getProperty(FETCH_SIZE).evaluateAttributeExpressions(fileToProcess);
+            final Integer fetchSizeOverride = fetchSizeProperty.isSet() ? fetchSizeProperty.asInteger() : null;
+            if (fetchSizeOverride != null && fetchSizeOverride < 0) {
+                throw new IllegalArgumentException("Fetch Size must not be negative, but was " + fetchSizeOverride);
+            }
+
+            final PropertyValue queryTimeoutProperty = context.getProperty(QUERY_TIMEOUT).evaluateAttributeExpressions(fileToProcess);
+            final Duration queryTimeoutOverride = queryTimeoutProperty.isSet() ? queryTimeoutProperty.asDuration() : null;
+
             stopWatch.start();
 
-            cqlExecutionService.query(selectQuery, queryParameters, callback, queryOverrides);
+            cqlExecutionService.query(selectQuery, queryParameters, callback, new QueryOverrides(fetchSizeOverride, queryTimeoutOverride));
 
             if (callback.isEmpty() && fileToProcess != null) {
                 session.transfer(fileToProcess, REL_ORIGINAL);

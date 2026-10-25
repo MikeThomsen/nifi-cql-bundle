@@ -24,7 +24,7 @@ jobs:
           cache: maven
 
       - name: Build and run unit and integration tests
-        run: mvn --batch-mode --no-transfer-progress -Pintegration-tests verify
+        run: mvn --batch-mode --no-transfer-progress -Pintegration-tests -DTEST_CQL_CONNECTION_TESTS=true verify
 
       - name: Upload test reports
         if: always()

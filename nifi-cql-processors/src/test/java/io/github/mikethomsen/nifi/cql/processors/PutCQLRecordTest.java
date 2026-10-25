@@ -259,6 +259,21 @@ public class PutCQLRecordTest {
     }
 
     @Test
+    @DisplayName("A Time To Live attribute that is not a duration routes to failure instead of leaving the FlowFile queued")
+    void testTtlFromAttributeThatDoesNotParseRoutesToFailure() {
+        runner.setProperty(PutCQLRecord.TTL, "${ttl}");
+        mockReader.addRecord("Hello, world", "test_user");
+
+        runner.enqueue("", Map.of("ttl", "ten minutes"));
+        runner.run();
+
+        runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_FAILURE, 1);
+        runner.assertQueueEmpty();
+        runner.getFlowFilesForRelationship(PutCQLRecord.REL_FAILURE).getFirst().assertAttributeEquals(PutCQLRecord.RECORDS_WRITTEN_ATTRIBUTE, "0");
+        verify(service, never()).insert(any(QualifiedTableName.class), anyList(), anyMap(), any(CqlBatchType.class), any(WriteOverrides.class));
+    }
+
+    @Test
     @DisplayName("A cql.statement.type attribute that is neither INSERT nor UPDATE routes to failure instead of inserting")
     void testUnrecognizedStatementTypeAttributeRoutesToFailure() {
         runner.setProperty(PutCQLRecord.STATEMENT_TYPE, "USE_ATTR");

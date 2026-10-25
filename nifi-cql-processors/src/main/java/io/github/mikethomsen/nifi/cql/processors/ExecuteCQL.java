@@ -304,18 +304,23 @@ public class ExecuteCQL extends AbstractCQLProcessor {
         final CQLExecutionService service = cqlSessionService.get();
         final String cql = context.getProperty(CQL_STATEMENT).evaluateAttributeExpressions(flowFile).getValue();
 
-        final PropertyValue timeoutProperty = context.getProperty(QUERY_TIMEOUT).evaluateAttributeExpressions(flowFile);
-        final Duration timeout = timeoutProperty.isSet() ? timeoutProperty.asDuration() : null;
-
         JsonLinesQueryCallback callback = null;
         final Map<String, String> incomingAttributes = flowFile == null ? Map.of() : flowFile.getAttributes();
 
         try {
+            // Parsed inside the try: a value from a FlowFile attribute that does not parse must route that
+            // FlowFile to failure, not escape onTrigger and leave it at the head of the queue.
+            final PropertyValue timeoutProperty = context.getProperty(QUERY_TIMEOUT).evaluateAttributeExpressions(flowFile);
+            final Duration timeout = timeoutProperty.isSet() ? timeoutProperty.asDuration() : null;
+
             final List<Object> parameters = getParameters(context, flowFile);
             service.validateStatement(cql, type, parameters.size());
 
             if (type == CqlStatementType.SELECT) {
                 final int fetchSize = context.getProperty(FETCH_SIZE).evaluateAttributeExpressions(flowFile).asInteger();
+                if (fetchSize < 1) {
+                    throw new IllegalArgumentException("Fetch Size must be at least 1, but was " + fetchSize);
+                }
                 final long rowsPerFlowFile = context.getProperty(ROWS_PER_FLOW_FILE).evaluateAttributeExpressions().asLong();
                 final int minQueued = context.getProperty(MIN_FLOW_FILES_QUEUED).evaluateAttributeExpressions().asInteger();
 
