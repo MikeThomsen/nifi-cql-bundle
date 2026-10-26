@@ -27,7 +27,6 @@ import java.util.Arrays;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * The ScyllaDB half of {@link io.github.mikethomsen.nifi.cql.cassandra.CqlConsistencyLevelTest}. This
@@ -46,12 +45,5 @@ class ScyllaConsistencyLevelTest {
                         + Arrays.stream(DefaultConsistencyLevel.values())
                                 .map(Enum::name)
                                 .collect(Collectors.joining(", ")));
-    }
-
-    @ParameterizedTest
-    @EnumSource(CqlConsistencyLevel.class)
-    @DisplayName("The declared value matches the fork level it resolves to")
-    void testValueMatchesTheResolvedForkLevel(final CqlConsistencyLevel level) {
-        assertEquals(level.getValue(), DefaultConsistencyLevel.valueOf(level.getValue()).name());
     }
 }

@@ -71,9 +71,9 @@ class CQLDistributedMapCacheTest {
         enable("false", null);
     }
 
-    private void enable(final String strictRemoval, final String timeToLive) throws Exception {
+    /** A fresh cluster and a cache pointed at {@code ks.cache}, left disabled so a test can configure it further. */
+    private TestRunner runnerWithCache() throws Exception {
         final TestRunner runner = TestRunners.newTestRunner(new NoOpProcessor());
-
         cluster = new FakeCQLExecutionService();
         runner.addControllerService("cql", cluster);
         runner.enableControllerService(cluster);
@@ -82,6 +82,11 @@ class CQLDistributedMapCacheTest {
         runner.addControllerService("cache", cache);
         runner.setProperty(cache, CQLDistributedMapCache.CQL_EXECUTION_SERVICE, "cql");
         runner.setProperty(cache, CQLDistributedMapCache.TABLE_NAME, "ks.cache");
+        return runner;
+    }
+
+    private void enable(final String strictRemoval, final String timeToLive) throws Exception {
+        final TestRunner runner = runnerWithCache();
         runner.setProperty(cache, CQLDistributedMapCache.STRICT_REMOVAL, strictRemoval);
         if (timeToLive != null) {
             runner.setProperty(cache, CQLDistributedMapCache.TIME_TO_LIVE, timeToLive);
@@ -138,21 +143,14 @@ class CQLDistributedMapCacheTest {
     // ---- Conditional operations, the reason this needs a lightweight transaction ----------------------
 
     @Test
-    @DisplayName("putIfAbsent creates the entry once and refuses thereafter, leaving the original value intact")
+    @DisplayName("putIfAbsent creates the entry once with a conditional statement and refuses thereafter, leaving the original value intact")
     void testPutIfAbsent() throws IOException {
         assertTrue(cache.putIfAbsent("k", "first", STRING_SERIALIZER, STRING_SERIALIZER));
+        assertTrue(cluster.executedStatements().getLast().cql().contains("IF NOT EXISTS"),
+                "without IF NOT EXISTS this is a read-then-write race, not a compare-and-set");
         assertFalse(cache.putIfAbsent("k", "second", STRING_SERIALIZER, STRING_SERIALIZER));
 
         assertEquals("first", get("k"), "the losing write must not overwrite");
-    }
-
-    @Test
-    @DisplayName("putIfAbsent issues a conditional statement, which is what makes it safe under concurrency")
-    void testPutIfAbsentUsesLightweightTransaction() throws IOException {
-        cache.putIfAbsent("k", "v", STRING_SERIALIZER, STRING_SERIALIZER);
-
-        assertTrue(cluster.executedStatements().getLast().cql().contains("IF NOT EXISTS"),
-                "without IF NOT EXISTS this is a read-then-write race, not a compare-and-set");
     }
 
     @Test
@@ -181,26 +179,17 @@ class CQLDistributedMapCacheTest {
     // ---- Removal -------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("Best-effort removal reports prior existence and deletes unconditionally")
+    @DisplayName("Best-effort removal reports prior existence and deletes unconditionally, in the two statements Strict Removal exists to replace")
     void testBestEffortRemove() throws IOException {
-        put("k", "v");
-
-        assertTrue(cache.remove("k", STRING_SERIALIZER));
-        assertNull(get("k"));
-        assertFalse(cache.remove("k", STRING_SERIALIZER));
-    }
-
-    @Test
-    @DisplayName("Best-effort removal takes two statements, which is the race Strict Removal exists to close")
-    void testBestEffortRemoveIsTwoStatements() throws IOException {
         put("k", "v");
         cluster.clearExecuted();
 
-        cache.remove("k", STRING_SERIALIZER);
-
+        assertTrue(cache.remove("k", STRING_SERIALIZER));
         assertEquals(2, cluster.executedStatements().size(),
                 "an existence check followed by an unconditional delete");
         assertFalse(cluster.executedStatements().getLast().cql().contains("IF EXISTS"));
+        assertNull(get("k"));
+        assertFalse(cache.remove("k", STRING_SERIALIZER));
     }
 
     @Test
@@ -219,30 +208,21 @@ class CQLDistributedMapCacheTest {
 
     @ParameterizedTest(name = "strictRemoval={0}")
     @ValueSource(strings = {"true", "false"})
-    @DisplayName("removeAndGet returns the value it removed regardless of the Strict Removal setting")
+    @DisplayName("removeAndGet reads then deletes conditionally regardless of the Strict Removal setting, because CQL has no delete-and-return")
     void testRemoveAndGet(final String strictRemoval) throws Exception {
         enable(strictRemoval, null);
         put("k", "v");
-
-        assertEquals("v", cache.removeAndGet("k", STRING_SERIALIZER, STRING_DESERIALIZER));
-        assertNull(get("k"));
-        assertNull(cache.removeAndGet("k", STRING_SERIALIZER, STRING_DESERIALIZER),
-                "removing an absent entry yields no prior value");
-    }
-
-    @Test
-    @DisplayName("removeAndGet reads then deletes conditionally, because CQL has no delete-and-return")
-    void testRemoveAndGetIsReadThenConditionalDelete() throws IOException {
-        put("k", "v");
         cluster.clearExecuted();
 
-        cache.removeAndGet("k", STRING_SERIALIZER, STRING_DESERIALIZER);
-
+        assertEquals("v", cache.removeAndGet("k", STRING_SERIALIZER, STRING_DESERIALIZER));
         assertEquals(2, cluster.executedStatements().size(),
                 "a read for the value, then a conditional delete for the outcome");
         assertTrue(cluster.executedStatements().getFirst().cql().startsWith("SELECT"));
         assertTrue(cluster.executedStatements().getLast().cql().contains("IF EXISTS"),
                 "the delete must be conditional, or a concurrent remover leaves this reporting a value nobody removed");
+        assertNull(get("k"));
+        assertNull(cache.removeAndGet("k", STRING_SERIALIZER, STRING_DESERIALIZER),
+                "removing an absent entry yields no prior value");
     }
 
     // ---- Bulk operations -----------------------------------------------------------------------------
@@ -289,15 +269,7 @@ class CQLDistributedMapCacheTest {
     @Test
     @DisplayName("A value over the configured maximum is rejected before anything is sent to the cluster")
     void testOversizedValueIsRejectedBeforeWriting() throws Exception {
-        final TestRunner runner = TestRunners.newTestRunner(new NoOpProcessor());
-        cluster = new FakeCQLExecutionService();
-        runner.addControllerService("cql", cluster);
-        runner.enableControllerService(cluster);
-
-        cache = new CQLDistributedMapCache();
-        runner.addControllerService("cache", cache);
-        runner.setProperty(cache, CQLDistributedMapCache.CQL_EXECUTION_SERVICE, "cql");
-        runner.setProperty(cache, CQLDistributedMapCache.TABLE_NAME, "ks.cache");
+        final TestRunner runner = runnerWithCache();
         runner.setProperty(cache, CQLDistributedMapCache.MAX_VALUE_SIZE, "4 B");
         runner.enableControllerService(cache);
 
@@ -332,16 +304,8 @@ class CQLDistributedMapCacheTest {
     @Test
     @DisplayName("The key and value column names are the ones configured, not hard-coded")
     void testConfiguredColumnNames() throws Exception {
-        final TestRunner runner = TestRunners.newTestRunner(new NoOpProcessor());
-        cluster = new FakeCQLExecutionService();
+        final TestRunner runner = runnerWithCache();
         cluster.withColumns("id", "payload");
-        runner.addControllerService("cql", cluster);
-        runner.enableControllerService(cluster);
-
-        cache = new CQLDistributedMapCache();
-        runner.addControllerService("cache", cache);
-        runner.setProperty(cache, CQLDistributedMapCache.CQL_EXECUTION_SERVICE, "cql");
-        runner.setProperty(cache, CQLDistributedMapCache.TABLE_NAME, "ks.cache");
         runner.setProperty(cache, CQLDistributedMapCache.KEY_COLUMN, "id");
         runner.setProperty(cache, CQLDistributedMapCache.VALUE_COLUMN, "payload");
         runner.enableControllerService(cache);
@@ -369,7 +333,6 @@ class CQLDistributedMapCacheTest {
     @DisplayName("A column name that is not a single CQL identifier is invalid")
     void testColumnNamesMustBeIdentifiers(final String columnName) throws Exception {
         final TestRunner runner = runnerWithCache();
-        runner.setProperty(cache, CQLDistributedMapCache.TABLE_NAME, "ks.cache");
         runner.setProperty(cache, CQLDistributedMapCache.KEY_COLUMN, columnName);
         runner.assertNotValid(cache);
 
@@ -404,18 +367,6 @@ class CQLDistributedMapCacheTest {
         assertEquals("INSERT INTO \"My KS\".\"cache\" (\"Key \"\"One\"\"\", \"payload\") VALUES (?, ?)",
                 cluster.executedStatements().getLast().cql());
         assertEquals("v", get("k"), "the value column is read back under the name the cluster gives it");
-    }
-
-    private TestRunner runnerWithCache() throws Exception {
-        final TestRunner runner = TestRunners.newTestRunner(new NoOpProcessor());
-        cluster = new FakeCQLExecutionService();
-        runner.addControllerService("cql", cluster);
-        runner.enableControllerService(cluster);
-
-        cache = new CQLDistributedMapCache();
-        runner.addControllerService("cache", cache);
-        runner.setProperty(cache, CQLDistributedMapCache.CQL_EXECUTION_SERVICE, "cql");
-        return runner;
     }
 
     @Test

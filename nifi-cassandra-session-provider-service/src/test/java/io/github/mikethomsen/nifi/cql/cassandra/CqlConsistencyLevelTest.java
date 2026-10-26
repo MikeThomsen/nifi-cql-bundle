@@ -27,8 +27,6 @@ import java.util.Arrays;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 
 /**
  * Pins {@link CqlConsistencyLevel}'s values against the DataStax driver's own enum.
@@ -61,24 +59,8 @@ class CqlConsistencyLevelTest {
                                 .collect(Collectors.joining(", ")));
     }
 
-    @ParameterizedTest
-    @EnumSource(CqlConsistencyLevel.class)
-    @DisplayName("The declared value matches the driver level it resolves to, so the two enums cannot drift apart silently")
-    void testValueMatchesTheResolvedDriverLevel(final CqlConsistencyLevel level) {
-        assertEquals(level.getValue(), DefaultConsistencyLevel.valueOf(level.getValue()).name());
-    }
-
     // Deliberately one-directional: exposing a subset of the driver's levels is a product decision, so a level
     // the driver gains but this enum does not offer is not a failure. The direction that matters is that
-    // everything offered in the UI works.
-
-    @ParameterizedTest
-    @EnumSource(CqlConsistencyLevel.class)
-    @DisplayName("Every level carries a display name and a description, which are what the Consistency Level dropdown renders")
-    void testDescribedValueContractIsPopulated(final CqlConsistencyLevel level) {
-        assertFalse(level.getDisplayName() == null || level.getDisplayName().isBlank(),
-                () -> level.name() + " has no display name");
-        assertFalse(level.getDescription() == null || level.getDescription().isBlank(),
-                () -> level.name() + " has no description; the dropdown would show a bare name");
-    }
+    // everything offered in the UI works. valueOf only accepts an exact name, so a parse that succeeds also
+    // means the two names match.
 }

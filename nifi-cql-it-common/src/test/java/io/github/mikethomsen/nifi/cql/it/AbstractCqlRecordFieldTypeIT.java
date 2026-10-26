@@ -49,7 +49,6 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
@@ -58,8 +57,8 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  * Exercises {@link CQLExecutionService#insert(String, org.apache.nifi.serialization.record.Record, WriteOverrides)}
  * and {@link CQLExecutionService#query(String, boolean, List, CQLQueryCallback, QueryOverrides)} for the
  * record-field-type to CQL-type pairings that only a real cluster can settle, against whichever backend the
- * concrete subclass wires up. Every case follows the same shape: write a record, assert the write succeeds,
- * read the row back, and assert the value comes back as the type the column holds.
+ * concrete subclass wires up. Every case follows the same shape: write a record, read the row back, and assert
+ * the value comes back as the type the column holds.
  *
  * <p>What stays here: the UDT cases, whose {@code Record}-to-{@code UdtValue} conversion is driven by the
  * driver's live, server-resolved type metadata (a fabricated {@code UserDefinedType} cannot stand in for
@@ -80,6 +79,12 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 public abstract class AbstractCqlRecordFieldTypeIT {
+
+    /** The {@code address_item} UDT the collection-of-UDT tests share. */
+    private static final RecordSchema ADDRESS_SCHEMA = new SimpleRecordSchema(List.of(
+            new RecordField("street_address", RecordFieldType.STRING.getDataType()),
+            new RecordField("state", RecordFieldType.STRING.getDataType()),
+            new RecordField("zip_code", RecordFieldType.INT.getDataType())));
 
     protected CQLExecutionService sessionProvider;
 
@@ -113,15 +118,25 @@ public abstract class AbstractCqlRecordFieldTypeIT {
         return new SimpleRecordSchema(List.of(new RecordField("id", RecordFieldType.INT.getDataType()), valueField));
     }
 
-    /**
-     * Reads back exactly one row via {@link CQLExecutionService#query}, asserting the query itself doesn't
-     * throw and that exactly one row came back, then returns it for the caller to assert on.
-     */
+    private void insert(final String tableName, final MapRecord record) {
+        sessionProvider.insert(new QualifiedTableName(null, tableName), record, Map.of(), WriteOverrides.NONE);
+    }
+
+    /** Creates the {@code address_item} UDT that {@link #ADDRESS_SCHEMA} describes. */
+    private void createAddressType() {
+        executeDdlWithRetry("create type if not exists " + keyspace + ".address_item (street_address text, state text, zip_code int)");
+    }
+
+    private static MapRecord address(final String street, final String state, final int zipCode) {
+        return new MapRecord(ADDRESS_SCHEMA, Map.of("street_address", street, "state", state, "zip_code", zipCode));
+    }
+
+    /** Reads back exactly one row via {@link CQLExecutionService#query}, for the caller to assert on. */
     private org.apache.nifi.serialization.record.Record readBack(final String tableName, final String columns, final int id) {
         final CollectingCqlQueryCallback callback = new CollectingCqlQueryCallback();
 
-        assertDoesNotThrow(() -> sessionProvider.query(
-                String.format("select %s from %s.%s where id = %d", columns, keyspace, tableName, id), null, callback, QueryOverrides.NONE));
+        sessionProvider.query(
+                String.format("select %s from %s.%s where id = %d", columns, keyspace, tableName, id), null, callback, QueryOverrides.NONE);
 
         final List<org.apache.nifi.serialization.record.Record> results = callback.getRecords();
         assertEquals(1, results.size(), () -> "Expected exactly one row back from " + tableName);
@@ -136,9 +151,8 @@ public abstract class AbstractCqlRecordFieldTypeIT {
      * value handed to the service in one Java type must come back in the type the column actually holds. Where
      * they are the same object the row is a plain round-trip.
      *
-     * <p>Types whose handling needs more than a value and a comparison - collections, UDTs, and the
-     * timeuuid rejection - keep their own methods below; forcing them into this shape would hide what they
-     * assert.
+     * <p>UDTs need more than a value and a comparison, so they keep their own methods below; forcing them
+     * into this shape would hide what they assert.
      */
     static Stream<Arguments> singleColumnTypes() {
         final Instant timestamp = Instant.now().truncatedTo(ChronoUnit.MILLIS);
@@ -146,6 +160,7 @@ public abstract class AbstractCqlRecordFieldTypeIT {
         final Date sqlDate = Date.valueOf(LocalDate.of(2024, 3, 15));
         final Time sqlTime = Time.valueOf(LocalTime.of(13, 45, 30));
         final Map<String, String> map = Map.of("key1", "value1", "key2", "value2");
+        final DataType stringArray = RecordFieldType.ARRAY.getArrayDataType(RecordFieldType.STRING.getDataType());
 
         return Stream.of(
                 // One canonical scalar round trip, as an end-to-end smoke test of the write/read path. The
@@ -172,7 +187,10 @@ public abstract class AbstractCqlRecordFieldTypeIT {
                 arguments("DATE <- java.sql.Date", "date_coercion_test", "date", RecordFieldType.DATE.getDataType(), sqlDate, sqlDate.toLocalDate()),
                 arguments("TIME <- java.sql.Time", "time_coercion_test", "time", RecordFieldType.TIME.getDataType(), sqlTime, sqlTime.toLocalTime()),
 
-                // A collection column: convertForCqlType's element recursion plus the server's own map encoding.
+                // Collection columns: convertForCqlType's element recursion plus the server's own encoding. A
+                // record ARRAY can hold a List or a Set, and each must land in the matching column type.
+                arguments("ARRAY (List) -> list<text>", "array_test", "list<text>", stringArray, List.of("a", "b", "c"), List.of("a", "b", "c")),
+                arguments("ARRAY (Set) -> set<text>", "set_test", "set<text>", stringArray, Set.of("a", "b", "c"), Set.of("a", "b", "c")),
                 arguments("MAP -> map<text, text>", "map_test", "map<text, text>",
                         RecordFieldType.MAP.getMapDataType(RecordFieldType.STRING.getDataType()), map, map));
     }
@@ -186,58 +204,24 @@ public abstract class AbstractCqlRecordFieldTypeIT {
         final RecordSchema schema = schemaFor(new RecordField("value_field", dataType));
         final MapRecord record = new MapRecord(schema, Map.of("id", 1, "value_field", written));
 
-        assertDoesNotThrow(() -> sessionProvider.insert(new QualifiedTableName(null, tableName), record, Map.of(), WriteOverrides.NONE));
+        insert(tableName, record);
 
         assertEquals(expected, readBack(tableName, "value_field", 1).getValue("value_field"));
     }
 
     @Test
-    @DisplayName("A record with an ARRAY of STRING field holding a List writes to and reads back from a list<text> column")
-    void testArray() {
-        createTable("array_test", "list<text>");
-        final RecordSchema schema = schemaFor(
-                new RecordField("value_field", RecordFieldType.ARRAY.getArrayDataType(RecordFieldType.STRING.getDataType())));
-        final List<String> expected = List.of("a", "b", "c");
-        final MapRecord record = new MapRecord(schema, Map.of("id", 1, "value_field", expected));
-
-        assertDoesNotThrow(() -> sessionProvider.insert(new QualifiedTableName(null, "array_test"), record, Map.of(), WriteOverrides.NONE));
-
-        assertEquals(expected, readBack("array_test", "value_field", 1).getValue("value_field"));
-    }
-
-    @Test
-    @DisplayName("A record with an ARRAY of STRING field holding a Set writes to and reads back from a set<text> column")
-    void testSetOfString() {
-        createTable("set_test", "set<text>");
-        final RecordSchema schema = schemaFor(
-                new RecordField("value_field", RecordFieldType.ARRAY.getArrayDataType(RecordFieldType.STRING.getDataType())));
-        final Set<String> expected = Set.of("a", "b", "c");
-        final MapRecord record = new MapRecord(schema, Map.of("id", 1, "value_field", expected));
-
-        assertDoesNotThrow(() -> sessionProvider.insert(new QualifiedTableName(null, "set_test"), record, Map.of(), WriteOverrides.NONE));
-
-        assertEquals(expected, readBack("set_test", "value_field", 1).getValue("value_field"));
-    }
-
-    @Test
     @DisplayName("A record with a MAP of RECORD field writes a map of UDT values to and reads it back")
     void testMapOfAddressUserDefinedType() {
-        executeDdlWithRetry("create type if not exists " + keyspace + ".address_map_item (street_address text, state text, zip_code int)");
-        executeDdlWithRetry(String.format("create table if not exists %s.address_map_test (id int primary key, addresses map<text, frozen<address_map_item>>)", keyspace));
+        createAddressType();
+        executeDdlWithRetry(String.format("create table if not exists %s.address_map_test (id int primary key, addresses map<text, frozen<address_item>>)", keyspace));
 
-        final RecordSchema addressSchema = new SimpleRecordSchema(List.of(
-                new RecordField("street_address", RecordFieldType.STRING.getDataType()),
-                new RecordField("state", RecordFieldType.STRING.getDataType()),
-                new RecordField("zip_code", RecordFieldType.INT.getDataType())
-        ));
         final RecordSchema schema = schemaFor(new RecordField("addresses",
-                RecordFieldType.MAP.getMapDataType(RecordFieldType.RECORD.getRecordDataType(addressSchema))));
+                RecordFieldType.MAP.getMapDataType(RecordFieldType.RECORD.getRecordDataType(ADDRESS_SCHEMA))));
+        final Map<String, MapRecord> addressesByName = Map.of(
+                "home", address("123 Main St", "NC", 27601),
+                "work", address("456 Elm St", "SC", 29401));
 
-        final MapRecord home = new MapRecord(addressSchema, Map.of("street_address", "123 Main St", "state", "NC", "zip_code", 27601));
-        final MapRecord work = new MapRecord(addressSchema, Map.of("street_address", "456 Elm St", "state", "SC", "zip_code", 29401));
-        final MapRecord record = new MapRecord(schema, Map.of("id", 1, "addresses", Map.of("home", home, "work", work)));
-
-        assertDoesNotThrow(() -> sessionProvider.insert(new QualifiedTableName(null, "address_map_test"), record, Map.of(), WriteOverrides.NONE));
+        insert("address_map_test", new MapRecord(schema, Map.of("id", 1, "addresses", addressesByName)));
 
         final Object addresses = readBack("address_map_test", "addresses", 1).getValue("addresses");
         assertInstanceOf(Map.class, addresses);
@@ -248,43 +232,10 @@ public abstract class AbstractCqlRecordFieldTypeIT {
     }
 
     @Test
-    @DisplayName("A record with a RECORD field for a Home Address writes a UDT and reads it back")
-    void testHomeAddressUserDefinedType() {
-        executeDdlWithRetry("create type if not exists " + keyspace + ".home_address (street_address text, state text, zip_code int)");
-        executeDdlWithRetry(String.format("create table if not exists %s.home_address_test (id int primary key, home_address frozen<home_address>)", keyspace));
-
-        final RecordSchema addressSchema = new SimpleRecordSchema(List.of(
-                new RecordField("street_address", RecordFieldType.STRING.getDataType()),
-                new RecordField("state", RecordFieldType.STRING.getDataType()),
-                new RecordField("zip_code", RecordFieldType.INT.getDataType())
-        ));
-        final RecordSchema schema = schemaFor(new RecordField("home_address", RecordFieldType.RECORD.getRecordDataType(addressSchema)));
-
-        // A plain nested MapRecord, exactly like what a RecordReader (JSON, Avro, etc.) would produce for a
-        // nested object - the session provider is responsible for converting this into the UdtValue the
-        // DataStax driver's codec requires.
-        final MapRecord homeAddress = new MapRecord(addressSchema, Map.of(
-                "street_address", "123 Main St",
-                "state", "NC",
-                "zip_code", 27601));
-
-        final MapRecord record = new MapRecord(schema, Map.of("id", 1, "home_address", homeAddress));
-
-        assertDoesNotThrow(() -> sessionProvider.insert(new QualifiedTableName(null, "home_address_test"), record, Map.of(), WriteOverrides.NONE));
-
-        final Object readValue = readBack("home_address_test", "home_address", 1).getValue("home_address");
-        assertInstanceOf(UdtValue.class, readValue);
-        final UdtValue udtValue = (UdtValue) readValue;
-        assertEquals("123 Main St", udtValue.getString("street_address"));
-        assertEquals("NC", udtValue.getString("state"));
-        assertEquals(27601, udtValue.getInt("zip_code"));
-    }
-
-    @Test
     @DisplayName("A record with a UDT nested inside another UDT writes to and reads back without any UDT-specific code")
     void testPersonWithNestedAddressUserDefinedType() {
-        // Deliberately different names, field count, casing, and nesting depth than testHomeAddressUserDefinedType:
-        // this proves the RECORD-to-UdtValue conversion is driven entirely by the driver's live UDT metadata
+        // Deliberately different names, casing, and nesting depth than the address_item type the collection
+        // tests use: this proves the RECORD-to-UdtValue conversion is driven entirely by the driver's live UDT metadata
         // rather than any UDT-specific code, since it also has to recurse into a UDT nested inside another UDT.
         // Quoting "firstName"/"lastName"/"zipCode" preserves their camelCase spelling; CQL would otherwise fold
         // unquoted identifiers to lowercase.
@@ -314,7 +265,7 @@ public abstract class AbstractCqlRecordFieldTypeIT {
                 "address", address));
         final MapRecord record = new MapRecord(schema, Map.of("id", 1, "person", person));
 
-        assertDoesNotThrow(() -> sessionProvider.insert(new QualifiedTableName(null, "person_test"), record, Map.of(), WriteOverrides.NONE));
+        insert("person_test", record);
 
         final Object readValue = readBack("person_test", "person", 1).getValue("person");
         assertInstanceOf(UdtValue.class, readValue);
@@ -330,30 +281,21 @@ public abstract class AbstractCqlRecordFieldTypeIT {
     @Test
     @DisplayName("A record with an ARRAY of RECORD field writes a list of UDTs to and reads it back")
     void testArrayOfAddressUserDefinedType() {
-        executeDdlWithRetry("create type if not exists " + keyspace + ".address_item (street_address text, state text, zip_code int)");
+        createAddressType();
         executeDdlWithRetry(String.format("create table if not exists %s.address_array_test (id int primary key, addresses list<frozen<address_item>>)", keyspace));
 
-        final RecordSchema addressSchema = new SimpleRecordSchema(List.of(
-                new RecordField("street_address", RecordFieldType.STRING.getDataType()),
-                new RecordField("state", RecordFieldType.STRING.getDataType()),
-                new RecordField("zip_code", RecordFieldType.INT.getDataType())
-        ));
         final RecordSchema schema = schemaFor(new RecordField("addresses",
-                RecordFieldType.ARRAY.getArrayDataType(RecordFieldType.RECORD.getRecordDataType(addressSchema))));
+                RecordFieldType.ARRAY.getArrayDataType(RecordFieldType.RECORD.getRecordDataType(ADDRESS_SCHEMA))));
+        final List<MapRecord> addresses = List.of(address("123 Main St", "NC", 27601), address("456 Elm St", "SC", 29401));
 
-        final MapRecord addressOne = new MapRecord(addressSchema, Map.of("street_address", "123 Main St", "state", "NC", "zip_code", 27601));
-        final MapRecord addressTwo = new MapRecord(addressSchema, Map.of("street_address", "456 Elm St", "state", "SC", "zip_code", 29401));
-        final MapRecord record = new MapRecord(schema, Map.of("id", 1, "addresses", List.of(addressOne, addressTwo)));
+        insert("address_array_test", new MapRecord(schema, Map.of("id", 1, "addresses", addresses)));
 
-        assertDoesNotThrow(() -> sessionProvider.insert(new QualifiedTableName(null, "address_array_test"), record, Map.of(), WriteOverrides.NONE));
-
-        final Object addresses = readBack("address_array_test", "addresses", 1).getValue("addresses");
-        assertInstanceOf(List.class, addresses);
-        final List<?> addressList = (List<?>) addresses;
+        final Object readValue = readBack("address_array_test", "addresses", 1).getValue("addresses");
+        assertInstanceOf(List.class, readValue);
+        final List<?> addressList = (List<?>) readValue;
         assertEquals(2, addressList.size());
         assertInstanceOf(UdtValue.class, addressList.get(0));
         assertEquals("123 Main St", ((UdtValue) addressList.get(0)).getString("street_address"));
         assertEquals("456 Elm St", ((UdtValue) addressList.get(1)).getString("street_address"));
     }
-
 }

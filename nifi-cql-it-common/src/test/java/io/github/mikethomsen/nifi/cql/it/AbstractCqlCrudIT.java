@@ -17,7 +17,6 @@
 package io.github.mikethomsen.nifi.cql.it;
 
 import com.datastax.oss.driver.api.core.CqlSession;
-import com.datastax.oss.driver.api.core.cql.ResultSet;
 import com.datastax.oss.driver.api.core.cql.Row;
 import org.apache.nifi.serialization.SimpleRecordSchema;
 import org.apache.nifi.serialization.record.MapRecord;
@@ -46,7 +45,6 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -106,48 +104,42 @@ public abstract class AbstractCqlCrudIT {
                 .enable();
     }
 
-    private RecordSchema getMessageSchema() {
-        List<RecordField> fields = List.of(
+    private static MapRecord messageRecord(final String sender, final String receiver, final String message, final Instant whenSent) {
+        final RecordSchema schema = new SimpleRecordSchema(List.of(
                 new RecordField("sender", RecordFieldType.STRING.getDataType()),
                 new RecordField("receiver", RecordFieldType.STRING.getDataType()),
                 new RecordField("message", RecordFieldType.STRING.getDataType()),
-                new RecordField("when_sent", RecordFieldType.TIMESTAMP.getDataType())
-        );
-        return new SimpleRecordSchema(fields);
+                new RecordField("when_sent", RecordFieldType.TIMESTAMP.getDataType())));
+        // A HashMap rather than Map.of, which rejects the null message some tests need.
+        final Map<String, Object> values = new HashMap<>();
+        values.put("sender", sender);
+        values.put("receiver", receiver);
+        values.put("message", message);
+        values.put("when_sent", whenSent);
+        return new MapRecord(schema, values);
     }
 
-    @Test
-    @DisplayName("Inserting a record writes it to the table using the CQL execution service")
-    void testInsertRecord() {
-        RecordSchema schema = getMessageSchema();
-        Map<String, Object> rawRecord = new HashMap<>();
-        rawRecord.put("sender", "john.smith");
-        rawRecord.put("receiver", "jane.smith");
-        rawRecord.put("message", "hello");
-        rawRecord.put("when_sent", Instant.now());
+    private static MapRecord counterRecord(final String key) {
+        final RecordSchema schema = new SimpleRecordSchema(List.of(
+                new RecordField("column_a", RecordFieldType.STRING.getDataType()),
+                new RecordField("increment_field", RecordFieldType.INT.getDataType())));
+        return new MapRecord(schema, Map.of("column_a", key, "increment_field", 1));
+    }
 
-        MapRecord record = new MapRecord(schema, rawRecord);
-
-        assertDoesNotThrow(() -> sessionProvider.insert(new QualifiedTableName(null, "message"), record, Map.of(), WriteOverrides.NONE));
+    private long counterValue(final String key) {
+        return session.execute("select increment_field from testspace.counter_test where column_a = '" + key + "'")
+                .one().getLong("increment_field");
     }
 
     @Test
     @DisplayName("A null field leaves its column untouched when nulls are unset, and clears it when they are written")
     void testNullFieldIsUnsetOrWritten() {
-        final RecordSchema schema = getMessageSchema();
         final Instant whenSent = Instant.parse("2026-01-02T03:04:05Z");
         final QualifiedTableName table = new QualifiedTableName(null, "message");
 
-        final Map<String, Object> withMessage = new HashMap<>();
-        withMessage.put("sender", "null.handling");
-        withMessage.put("receiver", "jane.smith");
-        withMessage.put("message", "hello");
-        withMessage.put("when_sent", whenSent);
-        sessionProvider.insert(table, new MapRecord(schema, withMessage), Map.of(), WriteOverrides.NONE);
+        sessionProvider.insert(table, messageRecord("null.handling", "jane.smith", "hello", whenSent), Map.of(), WriteOverrides.NONE);
 
-        final Map<String, Object> withoutMessage = new HashMap<>(withMessage);
-        withoutMessage.put("message", null);
-        final MapRecord sparse = new MapRecord(schema, withoutMessage);
+        final MapRecord sparse = messageRecord("null.handling", "jane.smith", null, whenSent);
         final String select = "select message from testspace.message where sender = 'null.handling'";
 
         sessionProvider.insert(table, sparse, Map.of(), new WriteOverrides(null, null, true));
@@ -162,77 +154,25 @@ public abstract class AbstractCqlCrudIT {
 
     @Test
     @DisplayName("Incrementing then decrementing a counter column produces the expected running total")
-    void testIncrementAndDecrement() throws Exception {
-        RecordField field1 = new RecordField("column_a", RecordFieldType.STRING.getDataType());
-        RecordField field2 = new RecordField("increment_field", RecordFieldType.INT.getDataType());
-        RecordSchema schema = new SimpleRecordSchema(List.of(field1, field2));
+    void testIncrementAndDecrement() {
+        final QualifiedTableName table = new QualifiedTableName(null, "counter_test");
+        final MapRecord record = counterRecord("abcdef");
+        final List<String> updateKeys = List.of("column_a");
 
-        Map<String, Object> map = new HashMap<>();
-        map.put("column_a", "abcdef");
-        map.put("increment_field", 1);
+        sessionProvider.update(table, record, Map.of(), updateKeys, UpdateMethod.INCREMENT, WriteOverrides.NONE);
+        sessionProvider.update(table, record, Map.of(), updateKeys, UpdateMethod.INCREMENT, WriteOverrides.NONE);
+        assertEquals(2, counterValue("abcdef"));
 
-        MapRecord record = new MapRecord(schema, map);
-
-        List<String> updateKeys = new ArrayList<>();
-        updateKeys.add("column_a");
-
-        //Set the initial value
-        sessionProvider.update(new QualifiedTableName(null, "counter_test"), record, Map.of(), updateKeys, UpdateMethod.INCREMENT, WriteOverrides.NONE);
-
-        Thread.sleep(1000);
-
-        sessionProvider.update(new QualifiedTableName(null, "counter_test"), record, Map.of(), updateKeys, UpdateMethod.INCREMENT, WriteOverrides.NONE);
-
-        ResultSet results = session.execute("select increment_field from testspace.counter_test where column_a = 'abcdef'");
-
-        Iterator<Row> rowIterator = results.iterator();
-
-        Row row = rowIterator.next();
-
-        assertEquals(2, row.getLong("increment_field"));
-
-        sessionProvider.update(new QualifiedTableName(null, "counter_test"), record, Map.of(), updateKeys, UpdateMethod.DECREMENT, WriteOverrides.NONE);
-
-        results = session.execute("select increment_field from testspace.counter_test where column_a = 'abcdef'");
-
-        rowIterator = results.iterator();
-
-        row = rowIterator.next();
-
-        assertEquals(1, row.getLong("increment_field"));
-    }
-
-    @Test
-    @DisplayName("Batch-inserting records with a LOGGED batch type writes them all")
-    void testBatchInsert() {
-        RecordSchema schema = getMessageSchema();
-        List<org.apache.nifi.serialization.record.Record> records = new ArrayList<>();
-        for (int i = 0; i < 3; i++) {
-            Map<String, Object> rawRecord = new HashMap<>();
-            rawRecord.put("sender", "batch.sender." + i);
-            rawRecord.put("receiver", "jane.smith");
-            rawRecord.put("message", "hello " + i);
-            rawRecord.put("when_sent", Instant.now());
-            records.add(new MapRecord(schema, rawRecord));
-        }
-
-        assertDoesNotThrow(() -> sessionProvider.insert(new QualifiedTableName(null, "message"), records, Map.of(), CqlBatchType.LOGGED, WriteOverrides.NONE));
+        sessionProvider.update(table, record, Map.of(), updateKeys, UpdateMethod.DECREMENT, WriteOverrides.NONE);
+        assertEquals(1, counterValue("abcdef"));
     }
 
     @Test
     @DisplayName("Batch-updating counters requires a COUNTER batch type - Cassandra/ScyllaDB reject counter mutations in a LOGGED batch")
-    void testBatchCounterUpdateRequiresCounterBatchType() throws Exception {
-        RecordField field1 = new RecordField("column_a", RecordFieldType.STRING.getDataType());
-        RecordField field2 = new RecordField("increment_field", RecordFieldType.INT.getDataType());
-        RecordSchema schema = new SimpleRecordSchema(List.of(field1, field2));
-
-        List<org.apache.nifi.serialization.record.Record> records = new ArrayList<>();
-        for (String key : List.of("batch-counter-a", "batch-counter-b", "batch-counter-c")) {
-            Map<String, Object> map = new HashMap<>();
-            map.put("column_a", key);
-            map.put("increment_field", 1);
-            records.add(new MapRecord(schema, map));
-        }
+    void testBatchCounterUpdateRequiresCounterBatchType() {
+        final List<String> keys = List.of("batch-counter-a", "batch-counter-b", "batch-counter-c");
+        final List<org.apache.nifi.serialization.record.Record> records = new ArrayList<>();
+        keys.forEach(key -> records.add(counterRecord(key)));
 
         List<String> updateKeys = List.of("column_a");
 
@@ -245,23 +185,15 @@ public abstract class AbstractCqlCrudIT {
 
         sessionProvider.update(new QualifiedTableName(null, "counter_test"), records, Map.of(), updateKeys, UpdateMethod.INCREMENT, CqlBatchType.COUNTER, WriteOverrides.NONE);
 
-        for (String key : List.of("batch-counter-a", "batch-counter-b", "batch-counter-c")) {
-            Row row = session.execute("select increment_field from testspace.counter_test where column_a = '" + key + "'").iterator().next();
-            assertEquals(1, row.getLong("increment_field"));
+        for (final String key : keys) {
+            assertEquals(1, counterValue(key));
         }
     }
 
     @Test
     @DisplayName("Inserting a record with a TTL override sets an expiration on the written columns")
     void testInsertWithTtlOverrideSetsExpiration() {
-        RecordSchema schema = getMessageSchema();
-        Map<String, Object> rawRecord = new HashMap<>();
-        rawRecord.put("sender", "ttl.sender");
-        rawRecord.put("receiver", "ttl.receiver");
-        rawRecord.put("message", "expires soon");
-        rawRecord.put("when_sent", Instant.now());
-
-        MapRecord record = new MapRecord(schema, rawRecord);
+        MapRecord record = messageRecord("ttl.sender", "ttl.receiver", "expires soon", Instant.now());
 
         sessionProvider.insert(new QualifiedTableName(null, "message"), record, Map.of(), new WriteOverrides(Duration.ofSeconds(100), null, false));
 
@@ -280,16 +212,8 @@ public abstract class AbstractCqlCrudIT {
     @Test
     @DisplayName("Inserting with a Timestamp Field override uses that record field's value as the CQL write timestamp")
     void testInsertWithTimestampFieldOverrideUsesRecordValue() {
-        RecordSchema schema = getMessageSchema();
         Instant eventTime = Instant.now().minus(Duration.ofDays(30)).truncatedTo(ChronoUnit.MILLIS);
-
-        Map<String, Object> rawRecord = new HashMap<>();
-        rawRecord.put("sender", "timestamp.sender");
-        rawRecord.put("receiver", "timestamp.receiver");
-        rawRecord.put("message", "old event");
-        rawRecord.put("when_sent", eventTime);
-
-        MapRecord record = new MapRecord(schema, rawRecord);
+        MapRecord record = messageRecord("timestamp.sender", "timestamp.receiver", "old event", eventTime);
 
         sessionProvider.insert(new QualifiedTableName(null, "message"), record, Map.of(), new WriteOverrides(null, "when_sent", false));
 
@@ -303,25 +227,12 @@ public abstract class AbstractCqlCrudIT {
     @Test
     @DisplayName("Each record in a batch insert carries its own write timestamp when a Timestamp Field override is set")
     void testBatchInsertWithTimestampFieldOverrideUsesPerRecordValues() {
-        RecordSchema schema = getMessageSchema();
         Instant olderEventTime = Instant.now().minus(Duration.ofDays(30)).truncatedTo(ChronoUnit.MILLIS);
         Instant newerEventTime = Instant.now().minus(Duration.ofDays(1)).truncatedTo(ChronoUnit.MILLIS);
 
-        Map<String, Object> olderRawRecord = new HashMap<>();
-        olderRawRecord.put("sender", "batch.timestamp.sender");
-        olderRawRecord.put("receiver", "older.receiver");
-        olderRawRecord.put("message", "older event");
-        olderRawRecord.put("when_sent", olderEventTime);
-
-        Map<String, Object> newerRawRecord = new HashMap<>();
-        newerRawRecord.put("sender", "batch.timestamp.sender");
-        newerRawRecord.put("receiver", "newer.receiver");
-        newerRawRecord.put("message", "newer event");
-        newerRawRecord.put("when_sent", newerEventTime);
-
         List<org.apache.nifi.serialization.record.Record> records = List.of(
-                new MapRecord(schema, olderRawRecord),
-                new MapRecord(schema, newerRawRecord));
+                messageRecord("batch.timestamp.sender", "older.receiver", "older event", olderEventTime),
+                messageRecord("batch.timestamp.sender", "newer.receiver", "newer event", newerEventTime));
 
         sessionProvider.insert(new QualifiedTableName(null, "message"), records, Map.of(), CqlBatchType.LOGGED, new WriteOverrides(null, "when_sent", false));
 
@@ -331,7 +242,7 @@ public abstract class AbstractCqlCrudIT {
 
     @Test
     @DisplayName("Updating with a Timestamp Field override uses that record field's value as the CQL write timestamp")
-    void testUpdateSetWithTimestampFieldOverrideUsesRecordValue() throws Exception {
+    void testUpdateSetWithTimestampFieldOverrideUsesRecordValue() {
         // "when_sent" doubles as both an update key (part of message's primary key, so it identifies which row
         // to update) and the Timestamp Field source - a realistic pattern, since it's a real column already
         // being written, not an extra field invented just to carry a timestamp. generateUpdate() only knows
@@ -349,16 +260,8 @@ public abstract class AbstractCqlCrudIT {
                 "insert into testspace.message (sender, receiver, message, when_sent) values "
                         + "('update.timestamp.sender', 'update.timestamp.receiver', 'original', %d) using timestamp %d",
                 whenSent.toEpochMilli(), deliberatelyOldWriteTimestamp));
-        Thread.sleep(250);
 
-        RecordSchema schema = getMessageSchema();
-        Map<String, Object> map = new HashMap<>();
-        map.put("sender", "update.timestamp.sender");
-        map.put("receiver", "update.timestamp.receiver");
-        map.put("message", "updated");
-        map.put("when_sent", whenSent);
-
-        MapRecord record = new MapRecord(schema, map);
+        MapRecord record = messageRecord("update.timestamp.sender", "update.timestamp.receiver", "updated", whenSent);
         List<String> updateKeys = List.of("sender", "receiver", "when_sent");
 
         sessionProvider.update(new QualifiedTableName(null, "message"), record, Map.of(), updateKeys, UpdateMethod.SET, new WriteOverrides(null, "when_sent", false));
@@ -382,45 +285,19 @@ public abstract class AbstractCqlCrudIT {
     }
 
     @Test
-    @DisplayName("A Timestamp Field override is ignored for counter updates, since Cassandra/ScyllaDB do not support a custom write timestamp on counter columns")
-    void testCounterUpdateIgnoresTimestampFieldOverride() {
-        RecordField field1 = new RecordField("column_a", RecordFieldType.STRING.getDataType());
-        RecordField field2 = new RecordField("increment_field", RecordFieldType.INT.getDataType());
-        RecordSchema schema = new SimpleRecordSchema(List.of(field1, field2));
+    @DisplayName("TTL and Timestamp Field overrides are ignored for counter updates, since Cassandra/ScyllaDB support neither on counter columns")
+    void testCounterUpdateIgnoresWriteOverrides() {
+        final QualifiedTableName table = new QualifiedTableName(null, "counter_test");
+        final List<String> updateKeys = List.of("column_a");
 
-        Map<String, Object> map = new HashMap<>();
-        map.put("column_a", "timestamp-ignored-for-counters");
-        map.put("increment_field", 1);
-
-        MapRecord record = new MapRecord(schema, map);
-        List<String> updateKeys = List.of("column_a");
-
-        // "column_a" isn't a timestamp-typed field, but it doesn't matter: if the override were mistakenly
-        // applied to a counter UPDATE, Cassandra/ScyllaDB would reject the statement outright regardless of
-        // what value was supplied ("Cannot provide custom timestamp for a BATCH containing counters" /
-        // similar), so not throwing here proves the override was correctly skipped before ever reading the field.
-        assertDoesNotThrow(() -> sessionProvider.update(new QualifiedTableName(null, "counter_test"), record, Map.of(), updateKeys, UpdateMethod.INCREMENT, new WriteOverrides(null, "column_a", false)));
-    }
-
-    @Test
-    @DisplayName("A TTL override is ignored for counter updates, since Cassandra/ScyllaDB do not support a TTL on counter columns")
-    void testCounterUpdateIgnoresTtlOverride() {
-        RecordField field1 = new RecordField("column_a", RecordFieldType.STRING.getDataType());
-        RecordField field2 = new RecordField("increment_field", RecordFieldType.INT.getDataType());
-        RecordSchema schema = new SimpleRecordSchema(List.of(field1, field2));
-
-        Map<String, Object> map = new HashMap<>();
-        map.put("column_a", "ttl-ignored-for-counters");
-        map.put("increment_field", 1);
-
-        MapRecord record = new MapRecord(schema, map);
-        List<String> updateKeys = List.of("column_a");
-
-        // If the TTL were mistakenly applied to a counter UPDATE, Cassandra/ScyllaDB would reject the
-        // statement outright ("Cannot set ttl on a counter column"), so simply not throwing here proves
-        // the override was correctly skipped.
-        assertDoesNotThrow(() -> sessionProvider.update(new QualifiedTableName(null, "counter_test"), record, Map.of(), updateKeys,
-                UpdateMethod.INCREMENT, new WriteOverrides(Duration.ofSeconds(100), null, false)));
+        // If either override were mistakenly applied to a counter UPDATE, Cassandra/ScyllaDB would reject the
+        // statement outright ("Cannot set ttl on a counter column", or a refusal of the custom timestamp), so
+        // not throwing proves it was skipped. "column_a" is not a timestamp field, which does not matter: the
+        // override must be dropped before the field is ever read.
+        assertDoesNotThrow(() -> sessionProvider.update(table, counterRecord("ttl-ignored-for-counters"), Map.of(), updateKeys,
+                UpdateMethod.INCREMENT, new WriteOverrides(Duration.ofSeconds(100), null, false)), "TTL override");
+        assertDoesNotThrow(() -> sessionProvider.update(table, counterRecord("timestamp-ignored-for-counters"), Map.of(), updateKeys,
+                UpdateMethod.INCREMENT, new WriteOverrides(null, "column_a", false)), "Timestamp Field override");
     }
 
     @Test
@@ -429,25 +306,14 @@ public abstract class AbstractCqlCrudIT {
         session.execute("insert into testspace.simple_set_test(username, is_active) values('john.smith', true)");
         Thread.sleep(250);
 
-        RecordField field1 = new RecordField("username", RecordFieldType.STRING.getDataType());
-        RecordField field2 = new RecordField("is_active", RecordFieldType.BOOLEAN.getDataType());
-        RecordSchema schema = new SimpleRecordSchema(List.of(field1, field2));
+        RecordSchema schema = new SimpleRecordSchema(List.of(
+                new RecordField("username", RecordFieldType.STRING.getDataType()),
+                new RecordField("is_active", RecordFieldType.BOOLEAN.getDataType())));
+        MapRecord record = new MapRecord(schema, Map.of("username", "john.smith", "is_active", false));
 
-        Map<String, Object> map = new HashMap<>();
-        map.put("username", "john.smith");
-        map.put("is_active", false);
+        sessionProvider.update(new QualifiedTableName(null, "simple_set_test"), record, Map.of(), List.of("username"), UpdateMethod.SET, WriteOverrides.NONE);
 
-        MapRecord record = new MapRecord(schema, map);
-
-        List<String> updateKeys = new ArrayList<>();
-        updateKeys.add("username");
-
-        sessionProvider.update(new QualifiedTableName(null, "simple_set_test"), record, Map.of(), updateKeys, UpdateMethod.SET, WriteOverrides.NONE);
-
-        Iterator<Row> iterator = session.execute("select is_active from testspace.simple_set_test where username = 'john.smith'").iterator();
-
-        Row row = iterator.next();
-
+        Row row = session.execute("select is_active from testspace.simple_set_test where username = 'john.smith'").one();
         assertFalse(row.getBoolean("is_active"));
     }
 
@@ -525,25 +391,18 @@ public abstract class AbstractCqlCrudIT {
     }
 
     @Test
-    @DisplayName("A conditional write that applies reports true and returns no row, since there was no prior value")
-    void testExecuteConditionalWriteApplied() {
+    @DisplayName("A conditional write applies once with no row, and is then rejected with the stored row, which is what makes compare-and-set one round trip")
+    void testExecuteConditionalWrite() {
         final String table = kvTable();
+        // A NUL byte in the stored value shows blobs come back as the exact bytes, with no encoding imposed.
+        final byte[] original = "opaque\0bytes".getBytes(StandardCharsets.UTF_8);
 
-        final CqlStatementResult result = sessionProvider.execute(
+        final CqlStatementResult applied = sessionProvider.execute(
                 "insert into " + table + " (k, v) values (?, ?) if not exists",
-                List.of(bytes("lwt-new"), bytes("first")), QueryOverrides.NONE);
-
-        assertTrue(result.wasApplied());
-        assertTrue(result.rows().isEmpty(),
-                () -> "expected no rows for an applied conditional write, got " + result.rows().size());
-    }
-
-    @Test
-    @DisplayName("A conditional write that is rejected returns the stored row, which is what makes compare-and-set one round trip")
-    void testExecuteConditionalWriteRejectedCarriesStoredRow() {
-        final String table = kvTable();
-        sessionProvider.execute("insert into " + table + " (k, v) values (?, ?)",
-                List.of(bytes("lwt-existing"), bytes("original")), QueryOverrides.NONE);
+                List.of(bytes("lwt-existing"), ByteBuffer.wrap(original)), QueryOverrides.NONE);
+        assertTrue(applied.wasApplied());
+        assertTrue(applied.rows().isEmpty(),
+                () -> "expected no rows for an applied conditional write, got " + applied.rows().size());
 
         final CqlStatementResult result = sessionProvider.execute(
                 "insert into " + table + " (k, v) values (?, ?) if not exists",
@@ -553,7 +412,7 @@ public abstract class AbstractCqlCrudIT {
         assertEquals(1, result.rows().size());
 
         final CqlRow stored = result.rows().getFirst();
-        assertArrayEquals("original".getBytes(StandardCharsets.UTF_8), stored.getBytes("v"),
+        assertArrayEquals(original, stored.getBytes("v"),
                 "the losing writer must see the value that is actually stored");
 
         // The outcome is reported by wasApplied(), not as data: "[applied]" is not a legal identifier, and
@@ -576,22 +435,6 @@ public abstract class AbstractCqlCrudIT {
         final CqlStatementResult again = sessionProvider.execute(
                 "delete from " + table + " where k = ? if exists", List.of(bytes("to-delete")), QueryOverrides.NONE);
         assertFalse(again.wasApplied(), "deleting an absent row must not report as applied");
-    }
-
-    @Test
-    @DisplayName("Blob values round-trip as bytes, with no schema imposed on an encoding the caller owns")
-    void testExecuteBlobRoundTrip() {
-        final String table = kvTable();
-        final byte[] payload = "opaque bytes".getBytes(StandardCharsets.UTF_8);
-
-        sessionProvider.execute("insert into " + table + " (k, v) values (?, ?)",
-                List.of(bytes("roundtrip"), ByteBuffer.wrap(payload)), QueryOverrides.NONE);
-
-        final CqlStatementResult result = sessionProvider.execute("select k, v from " + table + " where k = ?",
-                List.of(bytes("roundtrip")), QueryOverrides.NONE);
-
-        assertEquals(1, result.rows().size());
-        assertArrayEquals(payload, result.rows().getFirst().getBytes("v"));
     }
 
     @Test
@@ -624,7 +467,7 @@ public abstract class AbstractCqlCrudIT {
     }
 
     @Test
-    @DisplayName("validateStatement accepts a sound statement and rejects one that is the wrong type, unsafe, invalid or mis-parameterized")
+    @DisplayName("validateStatement accepts a sound statement and rejects one the cluster cannot prepare or whose markers do not match the parameters")
     void testValidateStatement() {
         assertDoesNotThrow(() -> sessionProvider.validateStatement("select * from message where sender = ?", CqlStatementType.SELECT, 1));
         assertDoesNotThrow(() -> sessionProvider.validateStatement(
@@ -632,12 +475,8 @@ public abstract class AbstractCqlCrudIT {
         assertDoesNotThrow(() -> sessionProvider.validateStatement(
                 "delete from message where sender = ? and receiver = ? and when_sent = ?", CqlStatementType.DELETE, 3));
 
-        // The text is not the kind of statement the caller said it was.
-        assertThrows(IllegalArgumentException.class, () -> sessionProvider.validateStatement(
-                "delete from message where sender = ?", CqlStatementType.SELECT, 1));
-        // An update or delete that would touch every row.
-        assertThrows(IllegalArgumentException.class, () -> sessionProvider.validateStatement(
-                "delete from message", CqlStatementType.DELETE, 0));
+        // The wrong kind of statement and a missing WHERE are rejected before preparing, and covered in
+        // CassandraCQLExecutionServicePrepareFailureTest. These need the cluster's own view of the statement.
         // Marker count does not match the parameters.
         assertThrows(IllegalArgumentException.class, () -> sessionProvider.validateStatement(
                 "select * from message where sender = ?", CqlStatementType.SELECT, 2));

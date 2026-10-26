@@ -29,15 +29,17 @@ import org.apache.nifi.serialization.record.type.RecordDataType;
 import org.apache.nifi.serialization.record.util.DataTypeUtils;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.time.Instant;
-import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Stream;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -81,13 +83,6 @@ public class CassandraUdtSchemaMapperTest {
                 "if the native TIMESTAMP type ever starts accepting Instant, revisit declaring it here");
     }
 
-    @Test
-    @DisplayName("DATE resolves to the STRING record type, which accepts the driver's LocalDate")
-    public void testDateStaysString() {
-        assertEquals(RecordFieldType.STRING, resolvedFieldType(DataTypes.DATE));
-        assertTrue(DataTypeUtils.isCompatibleDataType(LocalDate.of(2024, 3, 15), RecordFieldType.STRING.getDataType()));
-    }
-
     /**
      * CQL {@code time} is nanosecond-resolution and {@code java.sql.Time} - what the native TIME record type
      * is backed by - is not. Declaring the native type, or converting the value to suit it, silently
@@ -109,49 +104,24 @@ public class CassandraUdtSchemaMapperTest {
                 "documents why the native TIME type is not used - it truncates to whole seconds");
     }
 
-    @Test
-    @DisplayName("UUID resolves to the native UUID record type")
-    public void testUuidResolvesToUuidType() {
-        assertEquals(RecordFieldType.UUID, resolvedFieldType(DataTypes.UUID));
+    static Stream<Arguments> directlyMappedTypes() {
+        return Stream.of(
+                Arguments.of(DataTypes.UUID, RecordFieldType.UUID),
+                Arguments.of(DataTypes.TIMEUUID, RecordFieldType.UUID),
+                Arguments.of(DataTypes.DATE, RecordFieldType.STRING),
+                Arguments.of(DataTypes.DECIMAL, RecordFieldType.STRING),
+                Arguments.of(DataTypes.VARINT, RecordFieldType.STRING),
+                Arguments.of(DataTypes.INET, RecordFieldType.STRING),
+                // No Avro equivalent at all: these must still produce a schema rather than throw.
+                Arguments.of(DataTypes.DURATION, RecordFieldType.STRING),
+                Arguments.of(new DefaultTupleType(List.of(DataTypes.INT, DataTypes.TEXT)), RecordFieldType.STRING));
     }
 
-    @Test
-    @DisplayName("TIMEUUID resolves to the native UUID record type")
-    public void testTimeUuidResolvesToUuidType() {
-        assertEquals(RecordFieldType.UUID, resolvedFieldType(DataTypes.TIMEUUID));
-    }
-
-    @Test
-    @DisplayName("DECIMAL resolves to the STRING record type, not a fixed-precision decimal type")
-    public void testDecimalStaysString() {
-        assertEquals(RecordFieldType.STRING, resolvedFieldType(DataTypes.DECIMAL));
-    }
-
-    @Test
-    @DisplayName("VARINT resolves to the STRING record type")
-    public void testVarintStaysString() {
-        assertEquals(RecordFieldType.STRING, resolvedFieldType(DataTypes.VARINT));
-    }
-
-    @Test
-    @DisplayName("INET resolves to the STRING record type")
-    public void testInetStaysString() {
-        assertEquals(RecordFieldType.STRING, resolvedFieldType(DataTypes.INET));
-    }
-
-    @Test
-    @DisplayName("A CQL type with no Avro equivalent (DURATION) still produces a schema instead of throwing")
-    public void testDurationDoesNotThrow() {
-        final RecordFieldType fieldType = assertDoesNotThrow(() -> resolvedFieldType(DataTypes.DURATION));
-        assertEquals(RecordFieldType.STRING, fieldType);
-    }
-
-    @Test
-    @DisplayName("A compound CQL type with no Avro equivalent (TUPLE) still produces a schema instead of throwing")
-    public void testTupleDoesNotThrow() {
-        final DataType tupleType = new DefaultTupleType(List.of(DataTypes.INT, DataTypes.TEXT));
-        final RecordFieldType fieldType = assertDoesNotThrow(() -> resolvedFieldType(tupleType));
-        assertEquals(RecordFieldType.STRING, fieldType);
+    @ParameterizedTest(name = "{0} resolves to {1}")
+    @MethodSource("directlyMappedTypes")
+    @DisplayName("Each CQL type resolves to the record type a reader will see, including types with no Avro equivalent")
+    public void testResolvedFieldType(final DataType cqlType, final RecordFieldType expected) {
+        assertEquals(expected, resolvedFieldType(cqlType));
     }
 
     @Test

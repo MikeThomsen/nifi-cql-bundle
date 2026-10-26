@@ -65,18 +65,14 @@ class JavaSqlBridgeCodecTest {
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("codecs")
-    @DisplayName("A null value encodes to null and formats as the CQL NULL literal")
+    @DisplayName("Null stays null in every direction, rather than becoming a zero-epoch value")
     void testNullHandling(final String name, final TypeCodec<?> codec) {
         assertNull(encode(codec, null));
         assertEquals("NULL", format(codec, null));
-    }
-
-    @ParameterizedTest(name = "{0}")
-    @MethodSource("codecs")
-    @DisplayName("Decoding null bytes yields null rather than a zero-epoch value")
-    void testDecodeNullBytesReturnsNull(final String name, final TypeCodec<?> codec) {
         // The distinction matters: a NULL column must not read back as 1970-01-01.
         assertNull(codec.decode(null, VERSION));
+        assertNull(codec.parse("NULL"));
+        assertNull(codec.parse(null));
     }
 
     @Test
@@ -141,14 +137,6 @@ class JavaSqlBridgeCodecTest {
         final Object original = codec.decode(encode(codec, canonicalValueFor(name)), VERSION);
 
         assertEquals(original, codec.parse(format(codec, original)));
-    }
-
-    @ParameterizedTest(name = "{0}")
-    @MethodSource("codecs")
-    @DisplayName("parse() of the CQL NULL literal yields null rather than a zero-epoch value")
-    void testParseNullLiteralReturnsNull(final String name, final TypeCodec<?> codec) {
-        assertNull(codec.parse("NULL"));
-        assertNull(codec.parse(null));
     }
 
     private static Object canonicalValueFor(final String codecName) {

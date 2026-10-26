@@ -23,6 +23,7 @@ import com.datastax.oss.driver.api.core.cql.SimpleStatement;
 import com.datastax.oss.driver.api.core.metadata.Node;
 import com.datastax.oss.driver.api.core.servererrors.InvalidQueryException;
 import io.github.mikethomsen.nifi.cql.api.constants.CqlBatchType;
+import io.github.mikethomsen.nifi.cql.api.constants.CqlStatementType;
 import io.github.mikethomsen.nifi.cql.api.constants.UpdateMethod;
 import io.github.mikethomsen.nifi.cql.api.exception.QueryFailureException;
 import io.github.mikethomsen.nifi.cql.api.metadata.QualifiedTableName;
@@ -40,6 +41,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.List;
@@ -136,5 +138,16 @@ class CassandraCQLExecutionServicePrepareFailureTest {
 
         assertThrows(InvalidQueryException.class,
                 () -> service.execute("DELETE FROM ks.no_such_table WHERE id = ?", List.of("1"), QueryOverrides.NONE));
+    }
+
+    @ParameterizedTest(name = "{1}: {0}")
+    @CsvSource(delimiter = '|', value = {
+            "delete from message where sender = ? | SELECT",
+            "delete from message | DELETE",
+            "update message set message = ? | UPDATE"})
+    @DisplayName("validateStatement rejects the wrong kind of statement, or an update or delete with no WHERE clause, before asking the cluster")
+    void testValidateStatementRejectsBeforePreparing(final String cql, final CqlStatementType expectedType) {
+        assertThrows(IllegalArgumentException.class, () -> service.validateStatement(cql, expectedType, 0));
+        verifyNoInteractions(session);
     }
 }

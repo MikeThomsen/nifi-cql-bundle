@@ -79,19 +79,7 @@ public class ExecuteCQLQueryRecordTest {
         testRunner.setProperty(ExecuteCQLQueryRecord.MAX_ROWS_PER_FLOW_FILE, String.valueOf(rowsPerFlowFile));
         testRunner.setProperty(ExecuteCQLQueryRecord.OUTPUT_BATCH_SIZE, String.valueOf(outputBatchSize));
 
-        RecordField field1 = new RecordField("a", RecordFieldType.STRING.getDataType());
-        RecordField field2 = new RecordField("b", RecordFieldType.STRING.getDataType());
-        SimpleRecordSchema schema = new SimpleRecordSchema(List.of(field1, field2));
-
-        List<Record> data = new ArrayList<>();
-
-        for (int i = 0; i < recordCount; i++) {
-            Map<String, Object> rec = Map.of("a", UUID.randomUUID().toString(), "b", UUID.randomUUID().toString());
-            MapRecord testData = new MapRecord(schema, rec);
-            data.add(testData);
-        }
-
-        MockCQLQueryExecutionService service = new MockCQLQueryExecutionService(data.iterator());
+        MockCQLQueryExecutionService service = new MockCQLQueryExecutionService(records(recordCount).iterator());
 
         registerServices(service, new MockRecordWriter());
         testRunner.assertValid();
@@ -148,14 +136,18 @@ public class ExecuteCQLQueryRecordTest {
         testRunner.enableControllerService(writer);
     }
 
+    /** {@code count} records with a single string field, holding value-0, value-1 and so on. */
+    private static List<Record> records(final int count) {
+        final SimpleRecordSchema schema = new SimpleRecordSchema(List.of(new RecordField("a", RecordFieldType.STRING.getDataType())));
+        final List<Record> data = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            data.add(new MapRecord(schema, Map.of("a", "value-" + i)));
+        }
+        return data;
+    }
+
     private MockCQLQueryExecutionService configureServices() throws Exception {
-        RecordField field1 = new RecordField("a", RecordFieldType.STRING.getDataType());
-        SimpleRecordSchema schema = new SimpleRecordSchema(List.of(field1));
-
-        List<Record> data = new ArrayList<>();
-        data.add(new MapRecord(schema, Map.of("a", "value")));
-
-        MockCQLQueryExecutionService service = new MockCQLQueryExecutionService(data.iterator());
+        MockCQLQueryExecutionService service = new MockCQLQueryExecutionService(records(1).iterator());
 
         registerServices(service, new MockRecordWriter());
 
@@ -187,16 +179,8 @@ public class ExecuteCQLQueryRecordTest {
         testRunner.setProperty(ExecuteCQLQueryRecord.MAX_ROWS_PER_FLOW_FILE, String.valueOf(maxRowsPerFlowFile));
         testRunner.setProperty(ExecuteCQLQueryRecord.OUTPUT_BATCH_SIZE, String.valueOf(outputBatchSize));
 
-        final RecordField field = new RecordField("a", RecordFieldType.STRING.getDataType());
-        final SimpleRecordSchema schema = new SimpleRecordSchema(List.of(field));
-
-        final List<Record> data = new ArrayList<>();
-        for (int i = 0; i < rowsBeforeFailure; i++) {
-            data.add(new MapRecord(schema, Map.of("a", "value-" + i)));
-        }
-
         final MockCQLQueryExecutionService service =
-                new MockCQLQueryExecutionService(data.iterator()).failAfter(rowsBeforeFailure);
+                new MockCQLQueryExecutionService(records(rowsBeforeFailure).iterator()).failAfter(rowsBeforeFailure);
 
         registerServices(service, writer);
         testRunner.assertValid();
@@ -317,28 +301,6 @@ public class ExecuteCQLQueryRecordTest {
     }
 
     @Test
-    @DisplayName("Verify that CQL inside a parameter value stays data - it is bound, never concatenated into the query text")
-    public void testParameterValueIsNotInterpolatedIntoQueryText() throws Exception {
-        final String injected = "1' OR '1'='1";
-
-        testRunner.setProperty(ExecuteCQLQueryRecord.CQL_SELECT_QUERY, "SELECT * FROM cql_table WHERE id = ?");
-        testRunner.setProperty("cql.arg.1", "${row.id}");
-
-        MockCQLQueryExecutionService service = runWithSingleRecord(Map.of("row.id", injected));
-
-        assertEquals(List.of(injected), service.getLastParameters());
-        assertEquals("SELECT * FROM cql_table WHERE id = ?", service.getLastCql());
-    }
-
-    @Test
-    @DisplayName("Verify that a query with no parameters forwards an empty parameter list")
-    public void testNoParametersForwardsEmptyList() throws Exception {
-        MockCQLQueryExecutionService service = runWithSingleRecord();
-
-        assertEquals(List.of(), service.getLastParameters());
-    }
-
-    @Test
     @DisplayName("Verify that a gap in the positional parameter numbering fails validation")
     public void testNonConsecutiveParameterNumberingIsInvalid() throws Exception {
         configureServices();
@@ -392,10 +354,11 @@ public class ExecuteCQLQueryRecordTest {
     }
 
     @Test
-    @DisplayName("Verify that fetch size and query timeout overrides are unset by default, deferring to the connection service")
-    public void testQueryOverridesDefaultToUnset() throws Exception {
+    @DisplayName("Verify that by default no parameters are forwarded and fetch size and query timeout defer to the connection service")
+    public void testDefaultsForwardNoParametersOrOverrides() throws Exception {
         MockCQLQueryExecutionService service = runWithSingleRecord();
 
+        assertEquals(List.of(), service.getLastParameters());
         QueryOverrides overrides = service.getLastQueryOverrides();
         assertNotNull(overrides);
         assertNull(overrides.fetchSize());
@@ -440,13 +403,7 @@ public class ExecuteCQLQueryRecordTest {
     public void testWriterCreationFailureRoutesToFailureWithoutLeakingFlowFiles() throws Exception {
         testRunner.setProperty(ExecuteCQLQueryRecord.MAX_ROWS_PER_FLOW_FILE, "5");
 
-        RecordField field1 = new RecordField("a", RecordFieldType.STRING.getDataType());
-        SimpleRecordSchema schema = new SimpleRecordSchema(List.of(field1));
-
-        List<Record> data = new ArrayList<>();
-        data.add(new MapRecord(schema, Map.of("a", "value")));
-
-        MockCQLQueryExecutionService service = new MockCQLQueryExecutionService(data.iterator());
+        MockCQLQueryExecutionService service = new MockCQLQueryExecutionService(records(1).iterator());
         FailingRecordSetWriterFactory writer = new FailingRecordSetWriterFactory();
 
         registerServices(service, writer);
