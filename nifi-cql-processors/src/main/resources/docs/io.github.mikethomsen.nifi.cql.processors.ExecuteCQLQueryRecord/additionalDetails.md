@@ -61,10 +61,10 @@ CQL: a value of `1' OR '1'='1` is looked up as that literal string, not treated 
 Because Expression Language always produces text, each parameter is converted to whatever Java type its bind
 marker's declared CQL type requires, using the same conversion applied to record values on the write path.
 Text works directly for `text`/`ascii` columns, for the boolean, numeric, `date` and `time` types, for `uuid`,
-for `timeuuid` (which must still be a genuine version-1 UUID), and for `timestamp`, which accepts either an
-ISO-8601 instant such as `2026-08-07T14:30:00Z` or a count of milliseconds since the epoch. A type outside
-that set - `blob`, `inet`, `decimal`, `varint` or a collection - is passed to the driver as-is and will fail
-the query unless the value is already of a type the driver's codec for that column accepts.
+for `timeuuid` (which must still be a genuine version-1 UUID), for `decimal` and `varint`, for `inet`, which
+takes an IPv4 or IPv6 address literal (a host name is rejected rather than looked up), and for `timestamp`,
+which accepts either an ISO-8601 instant such as `2026-08-07T14:30:00Z` or a count of milliseconds since the
+epoch. A `blob` or a collection cannot be given as text, and fails the query.
 
 ### Interpolating a value into the query text instead
 
@@ -96,24 +96,26 @@ selected twice comes back as `v` and `v_2`. Give a column an alias (`SELECT min(
 choose its field name.
 
 * `BOOLEAN` &rarr; boolean; `TINYINT`/`SMALLINT`/`INT` &rarr; int (Avro has no byte/short primitive, so these
-  widen); `BIGINT`/`COUNTER` &rarr; long; `FLOAT` &rarr; float; `DOUBLE` &rarr; double; `BLOB` &rarr; bytes;
-  `ASCII`/`TEXT` &rarr; string.
+  widen); `BIGINT`/`COUNTER` &rarr; long; `FLOAT` &rarr; float; `DOUBLE` &rarr; double; `BLOB` &rarr; bytes,
+  holding a `byte[]`; `ASCII`/`TEXT` &rarr; string.
 * `UUID` and `TIMEUUID` become the record API's native `UUID` field type, holding the `java.util.UUID` the
   driver decoded. A `timeuuid` column's value is always a genuine version-1 (time-based) UUID by the time
   it's read back - Cassandra/ScyllaDB do not accept a non-version-1 value being written to a `timeuuid`
   column in the first place (see `PutCQLRecord`'s documentation for what happens on that write-side
   rejection) - so there is nothing extra to validate on the read side.
-* `TIMESTAMP`, `DATE`, `TIME`, `DECIMAL`, `VARINT` and `INET` are declared as a string field, while the value
+* `TIMESTAMP`, `DATE`, `TIME`, `DECIMAL` and `VARINT` are declared as a string field, while the value
   itself stays the driver's decoded object - a `java.time.Instant`, `LocalDate`, `LocalTime`,
-  `java.math.BigDecimal`, `java.math.BigInteger` or `java.net.InetAddress` respectively. See
+  `java.math.BigDecimal` or `java.math.BigInteger` respectively. `INET` is declared as a string too, and its
+  value is the address text, such as `127.0.0.1` or `0:0:0:0:0:0:0:1`. See
   [String-declared fields and their values](#string-declared-fields-and-their-values) below, which explains
   why and what it means for a downstream consumer.
-* `LIST`/`SET` become an Avro array, `MAP` becomes an Avro map, and a Cassandra User Defined Type (UDT)
-  becomes a nested named Avro record holding a record value, all recursively, using the same per-element
-  type mapping described above - a UDT nested inside another UDT, or inside a `LIST`/`SET`/`MAP`, is
-  resolved the same way with no special-casing. Note that Avro maps require string keys: a CQL `map` whose key type isn't already
-  string-like is represented with its real (non-string) key objects in the underlying data even though the
-  declared schema implies string keys.
+* `LIST`/`SET` become an Avro array holding a list, in the order the cluster returns the elements; `MAP`
+  becomes an Avro map; and a Cassandra User Defined Type (UDT) becomes a nested named Avro record holding a
+  record value, all recursively, using the same per-element type mapping described above - a UDT nested
+  inside another UDT, or inside a `LIST`/`SET`/`MAP`, is resolved the same way with no special-casing. Avro
+  maps have string keys, so a map's keys are written as text: a number or UUID as itself, a timestamp in
+  ISO-8601, an inet as its address, a blob as a CQL literal such as `0xcafe`, and a tuple or UDT as its CQL
+  literal.
 * A CQL type with no mapping defined above - `DURATION`, `TUPLE`, `VECTOR`, or any future/custom type - is
   represented as a string field. A tuple's value is its CQL literal, such as `(7,'x')`, and a duration's is
   its CQL text, such as `1h30m`; any other such type holds the driver's own decoded object. This keeps one
@@ -130,8 +132,9 @@ coerces it **losslessly** — via `toString()` — if and when a Record Writer a
 `LocalTime` renders in full as `15:14:54.899676065`; a `BigDecimal` renders as its exact decimal text.
 
 Leaving the driver's object in place is what makes both readings available: a writer that wants text gets a
-faithful rendering, and a script or custom writer that wants the real `BigDecimal`, `Instant` or
-`InetAddress` can take it straight from `getValue(...)` without reparsing a string.
+faithful rendering, and a script or custom writer that wants the real `BigDecimal` or `Instant` can take it
+straight from `getValue(...)` without reparsing a string. `INET` is the exception: an `InetAddress` renders
+with a leading slash (`/127.0.0.1`), so the value is its address text instead.
 
 Declaring NiFi's native types instead is not workable for these columns:
 
@@ -143,9 +146,6 @@ Declaring NiFi's native types instead is not workable for these columns:
   arbitrary-precision `decimal` cannot supply; a native `BIGINT` is not reachable through the Avro schema
   round trip at all.
 * There is no native NiFi record type for an IP address.
-
-One consequence worth knowing: `InetAddress.toString()` renders as `/127.0.0.1`, with a leading slash, so an
-`inet` column coerced to text carries that slash. Use the `InetAddress` object directly if that matters.
 
 ## Pagination and query overrides
 

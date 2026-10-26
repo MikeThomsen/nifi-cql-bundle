@@ -17,6 +17,7 @@
 
 package io.github.mikethomsen.nifi.cql.processors;
 
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.nifi.controller.ControllerService;
 import org.apache.nifi.flowfile.attributes.FragmentAttributes;
 import io.github.mikethomsen.nifi.cql.processors.mock.FailingRecordSetWriterFactory;
@@ -37,6 +38,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -49,6 +51,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -251,6 +254,11 @@ public class ExecuteCQLQueryRecordTest {
         testRunner.assertTransferCount(ExecuteCQLQueryRecord.REL_SUCCESS, 0);
         testRunner.assertTransferCount(ExecuteCQLQueryRecord.REL_ORIGINAL, 0);
         testRunner.assertTransferCount(ExecuteCQLQueryRecord.REL_RETRY, 0);
+
+        // The writer's own error is the one logged. Cleanup used to remove the unfinished FlowFile a second time,
+        // and that failure replaced it - in NiFi, also rolling the session back and requeueing the FlowFile.
+        final Throwable logged = testRunner.getLogger().getErrorMessages().getFirst().getThrowable();
+        assertInstanceOf(IOException.class, ExceptionUtils.getRootCause(logged));
     }
 
     private void useRejectingService(final RuntimeException rejection) throws Exception {

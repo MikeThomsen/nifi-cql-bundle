@@ -33,21 +33,32 @@ import io.github.mikethomsen.nifi.cql.api.metadata.PrimaryKeyIdentifier;
 import io.github.mikethomsen.nifi.cql.api.metadata.QualifiedTableName;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.net.InetAddress;
+import java.nio.ByteBuffer;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 /**
  * Unit coverage for the parts of the write path that never needed a cluster: statement generation, the
@@ -221,16 +232,43 @@ public class CassandraCQLExecutionServiceWritePathTest {
     }
 
     /**
-     * {@code Object[]} is NiFi's canonical ARRAY representation ({@code DataTypeUtils#toArray} always returns
-     * one), so {@code convertForCqlType} accepts it for a list column just as it does a {@code List}, converting
-     * element by element. Also lifted out of {@code AbstractCqlRecordFieldTypeIT}.
+     * The forms a record or a parameter commonly holds for columns the driver has no codec for from them: bytes
+     * as NiFi's {@code Object[]}, timestamps and numbers as text, and a collection of the other kind.
      */
-    @Test
-    @DisplayName("An Object[] targeting a list column is converted element-wise into a List")
-    public void testObjectArrayConvertsForListColumn() {
-        final Object converted = convertForCqlType(new Object[] {"a", "b", "c"}, DataTypes.listOf(DataTypes.TEXT));
+    static Stream<Arguments> convertedValues() throws Exception {
+        return Stream.of(
+                arguments("blob from byte[]", new byte[] {1, 2}, DataTypes.BLOB, ByteBuffer.wrap(new byte[] {1, 2})),
+                arguments("blob from Object[] of Byte", new Object[] {(byte) 1, (byte) 2}, DataTypes.BLOB, ByteBuffer.wrap(new byte[] {1, 2})),
+                arguments("timestamp from ISO-8601 text", "2024-03-15T13:45:30Z", DataTypes.TIMESTAMP, Instant.parse("2024-03-15T13:45:30Z")),
+                arguments("timestamp from epoch millis", 1710510330000L, DataTypes.TIMESTAMP, Instant.parse("2024-03-15T13:45:30Z")),
+                arguments("decimal from text", "1.25", DataTypes.DECIMAL, new BigDecimal("1.25")),
+                arguments("decimal from a double, by its shortest text", 1.1d, DataTypes.DECIMAL, new BigDecimal("1.1")),
+                arguments("varint from a long", 5L, DataTypes.VARINT, BigInteger.valueOf(5)),
+                arguments("inet from IPv4 text", "127.0.0.1", DataTypes.INET, InetAddress.getByAddress(new byte[] {127, 0, 0, 1})),
+                arguments("list from Object[]", new Object[] {"a", "b"}, DataTypes.listOf(DataTypes.TEXT), List.of("a", "b")),
+                arguments("list from a Set", new LinkedHashSet<>(List.of("a", "b")), DataTypes.listOf(DataTypes.TEXT), List.of("a", "b")),
+                arguments("set from a List", List.of("a", "b"), DataTypes.setOf(DataTypes.TEXT), Set.of("a", "b")));
+    }
 
-        assertEquals(List.of("a", "b", "c"), converted);
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("convertedValues")
+    @DisplayName("A value is converted to the Java type its column's codec binds")
+    public void testConvertsForCqlType(final String description, final Object value, final DataType cqlType, final Object expected) {
+        assertEquals(expected, convertForCqlType(value, cqlType));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("rejectedValues")
+    @DisplayName("A value that cannot be converted is rejected with the value in the message")
+    public void testRejectsUnconvertibleValue(final Object value, final DataType cqlType) {
+        final IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> convertForCqlType(value, cqlType));
+
+        assertTrue(exception.getMessage().contains(value.toString()), exception.getMessage());
+    }
+
+    /** A host name is rejected rather than looked up; a fraction has no varint. */
+    static Stream<Arguments> rejectedValues() {
+        return Stream.of(arguments("localhost", DataTypes.INET), arguments(1.5d, DataTypes.VARINT));
     }
 
     /**

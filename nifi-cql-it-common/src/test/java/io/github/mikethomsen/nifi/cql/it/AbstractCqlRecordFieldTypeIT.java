@@ -189,9 +189,13 @@ public abstract class AbstractCqlRecordFieldTypeIT {
                 arguments("TIME <- java.sql.Time", "time_coercion_test", "time", RecordFieldType.TIME.getDataType(), sqlTime, sqlTime.toLocalTime()),
 
                 // Collection columns: convertForCqlType's element recursion plus the server's own encoding. A
-                // record ARRAY can hold a List or a Set, and each must land in the matching column type.
+                // record ARRAY can hold a List or a Set, and each must land in the matching column type. A set
+                // reads back as a list, in the cluster's order, since a record ARRAY cannot hold a Set.
                 arguments("ARRAY (List) -> list<text>", "array_test", "list<text>", stringArray, List.of("a", "b", "c"), List.of("a", "b", "c")),
-                arguments("ARRAY (Set) -> set<text>", "set_test", "set<text>", stringArray, Set.of("a", "b", "c"), Set.of("a", "b", "c")),
+                arguments("ARRAY (Set) -> set<text>", "set_test", "set<text>", stringArray, Set.of("a", "b", "c"), List.of("a", "b", "c")),
+
+                // An inet written as text, and read back as text without InetAddress.toString()'s leading slash.
+                arguments("STRING -> inet", "inet_test", "inet", RecordFieldType.STRING.getDataType(), "127.0.0.1", "127.0.0.1"),
                 arguments("MAP -> map<text, text>", "map_test", "map<text, text>",
                         RecordFieldType.MAP.getMapDataType(RecordFieldType.STRING.getDataType()), map, map));
     }

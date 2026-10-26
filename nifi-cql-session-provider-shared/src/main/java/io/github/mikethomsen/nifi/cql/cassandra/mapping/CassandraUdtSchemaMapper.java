@@ -117,9 +117,11 @@ public final class CassandraUdtSchemaMapper {
             return schema;
         }
 
-        // TIMESTAMP/DATE/TIME, DECIMAL/VARINT and INET are all declared as a plain Avro string, and the
-        // driver's own decoded value (Instant/LocalDate/LocalTime, BigDecimal/BigInteger, InetAddress) is
-        // placed into the record unchanged. The declared type and the runtime class differ, but that is a
+        // TIMESTAMP/DATE/TIME, DECIMAL/VARINT and INET are all declared as a plain Avro string. The driver's
+        // own decoded value (Instant/LocalDate/LocalTime, BigDecimal/BigInteger) is placed into the record
+        // unchanged, except INET, whose toString() would lead with a slash, so
+        // CassandraCQLExecutionService#toRecordValue writes its address text instead. The declared type and the
+        // runtime class differ, but that is a
         // supported combination rather than a defect: RecordFieldType.STRING is a *widening* type over
         // DATE/TIME/TIMESTAMP/DECIMAL/BIGINT among others, so DataTypeUtils accepts each of these values for
         // a string field and coerces them losslessly (a nanosecond LocalTime renders in full, for instance)
