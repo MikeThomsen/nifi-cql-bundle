@@ -17,11 +17,11 @@
 package io.github.mikethomsen.nifi.cql.it;
 
 import com.datastax.oss.driver.api.core.CqlSession;
-import com.datastax.oss.driver.api.core.data.UdtValue;
 import com.datastax.oss.driver.api.core.uuid.Uuids;
 import org.apache.nifi.serialization.SimpleRecordSchema;
 import org.apache.nifi.serialization.record.DataType;
 import org.apache.nifi.serialization.record.MapRecord;
+import org.apache.nifi.serialization.record.Record;
 import org.apache.nifi.serialization.record.RecordField;
 import org.apache.nifi.serialization.record.RecordFieldType;
 import org.apache.nifi.serialization.record.RecordSchema;
@@ -54,18 +54,19 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 /**
- * Exercises {@link CQLExecutionService#insert(String, org.apache.nifi.serialization.record.Record, WriteOverrides)}
+ * Exercises {@link CQLExecutionService#insert(String, Record, WriteOverrides)}
  * and {@link CQLExecutionService#query(String, boolean, List, CQLQueryCallback, QueryOverrides)} for the
  * record-field-type to CQL-type pairings that only a real cluster can settle, against whichever backend the
  * concrete subclass wires up. Every case follows the same shape: write a record, read the row back, and assert
  * the value comes back as the type the column holds.
  *
- * <p>What stays here: the UDT cases, whose {@code Record}-to-{@code UdtValue} conversion is driven by the
- * driver's live, server-resolved type metadata (a fabricated {@code UserDefinedType} cannot stand in for
- * that); one round trip each for a list, a set, and a map; the two {@code java.sql.Date}/{@code Time} rows,
- * which bind through a custom codec but read back through the driver's default, so only a real round trip
- * shows the write and the read stay consistent across that asymmetry; and one canonical scalar plus one
- * representative coercion as an end-to-end smoke test of the write/read path.
+ * <p>What stays here: the UDT cases, whose {@code Record}-to-{@code UdtValue} conversion on write, and the
+ * conversion back to a {@code Record} on read, are driven by the driver's live, server-resolved type metadata (a
+ * fabricated {@code UserDefinedType} cannot stand in for that); one round trip each for a list, a set, and a
+ * map; the two {@code java.sql.Date}/{@code Time} rows, which bind through a custom codec but read back through
+ * the driver's default, so only a real round trip shows the write and the read stay consistent across that
+ * asymmetry; and one canonical scalar plus one representative coercion as an end-to-end smoke test of the
+ * write/read path.
  *
  * <p>What moved out: the rest of the scalar and coercion grid. Every {@code Flexible*Codec} widening is
  * covered byte-for-byte in {@code FlexibleCodecTest} and {@code CharacterCodecTest}, timestamp parsing in
@@ -132,13 +133,13 @@ public abstract class AbstractCqlRecordFieldTypeIT {
     }
 
     /** Reads back exactly one row via {@link CQLExecutionService#query}, for the caller to assert on. */
-    private org.apache.nifi.serialization.record.Record readBack(final String tableName, final String columns, final int id) {
+    private Record readBack(final String tableName, final String columns, final int id) {
         final CollectingCqlQueryCallback callback = new CollectingCqlQueryCallback();
 
         sessionProvider.query(
                 String.format("select %s from %s.%s where id = %d", columns, keyspace, tableName, id), null, callback, QueryOverrides.NONE);
 
-        final List<org.apache.nifi.serialization.record.Record> results = callback.getRecords();
+        final List<Record> results = callback.getRecords();
         assertEquals(1, results.size(), () -> "Expected exactly one row back from " + tableName);
         return results.getFirst();
     }
@@ -226,9 +227,9 @@ public abstract class AbstractCqlRecordFieldTypeIT {
         final Object addresses = readBack("address_map_test", "addresses", 1).getValue("addresses");
         assertInstanceOf(Map.class, addresses);
         @SuppressWarnings("unchecked")
-        final Map<String, UdtValue> addressMap = (Map<String, UdtValue>) addresses;
-        assertEquals("123 Main St", addressMap.get("home").getString("street_address"));
-        assertEquals("456 Elm St", addressMap.get("work").getString("street_address"));
+        final Map<String, Record> addressMap = (Map<String, Record>) addresses;
+        assertEquals("123 Main St", addressMap.get("home").getValue("street_address"));
+        assertEquals("456 Elm St", addressMap.get("work").getValue("street_address"));
     }
 
     @Test
@@ -268,14 +269,14 @@ public abstract class AbstractCqlRecordFieldTypeIT {
         insert("person_test", record);
 
         final Object readValue = readBack("person_test", "person", 1).getValue("person");
-        assertInstanceOf(UdtValue.class, readValue);
-        final UdtValue personValue = (UdtValue) readValue;
-        assertEquals("John", personValue.getString("firstName"));
-        assertEquals("Doe", personValue.getString("lastName"));
-        final UdtValue addressValue = personValue.getUdtValue("address");
-        assertEquals("123 Main St", addressValue.getString("street"));
-        assertEquals("NC", addressValue.getString("state"));
-        assertEquals(27601, addressValue.getInt("zipCode"));
+        assertInstanceOf(Record.class, readValue);
+        final Record personValue = (Record) readValue;
+        assertEquals("John", personValue.getValue("firstName"));
+        assertEquals("Doe", personValue.getValue("lastName"));
+        final Record addressValue = (Record) personValue.getValue("address");
+        assertEquals("123 Main St", addressValue.getValue("street"));
+        assertEquals("NC", addressValue.getValue("state"));
+        assertEquals(27601, addressValue.getValue("zipCode"));
     }
 
     @Test
@@ -294,8 +295,8 @@ public abstract class AbstractCqlRecordFieldTypeIT {
         assertInstanceOf(List.class, readValue);
         final List<?> addressList = (List<?>) readValue;
         assertEquals(2, addressList.size());
-        assertInstanceOf(UdtValue.class, addressList.get(0));
-        assertEquals("123 Main St", ((UdtValue) addressList.get(0)).getString("street_address"));
-        assertEquals("456 Elm St", ((UdtValue) addressList.get(1)).getString("street_address"));
+        assertInstanceOf(Record.class, addressList.get(0));
+        assertEquals("123 Main St", ((Record) addressList.get(0)).getValue("street_address"));
+        assertEquals("456 Elm St", ((Record) addressList.get(1)).getValue("street_address"));
     }
 }

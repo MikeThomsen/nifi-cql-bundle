@@ -173,8 +173,8 @@ public final class CassandraUdtSchemaMapper {
 
         // A CQL type with no case above - DURATION, TUPLE, VECTOR, and any future or custom type - is declared
         // as STRING rather than failing schema generation. This used to throw IllegalArgumentException here,
-        // which failed the entire query over one exotic column; CassandraCQLExecutionService#toRecordValue
-        // converts the value to match via toString(), the same fallback DECIMAL/VARINT/INET already use.
+        // which failed the entire query over one exotic column. CassandraCQLExecutionService#toRecordValue
+        // turns a tuple into its CQL literal text; a duration's own toString() already is one.
         return typeBuilder.stringType();
     }
 }

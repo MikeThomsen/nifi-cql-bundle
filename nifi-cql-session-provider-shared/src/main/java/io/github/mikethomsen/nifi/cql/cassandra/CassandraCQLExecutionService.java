@@ -34,6 +34,7 @@ import com.datastax.oss.driver.api.core.cql.ResultSet;
 import com.datastax.oss.driver.api.core.cql.Row;
 import com.datastax.oss.driver.api.core.cql.SimpleStatement;
 import com.datastax.oss.driver.api.core.cql.SimpleStatementBuilder;
+import com.datastax.oss.driver.api.core.data.TupleValue;
 import com.datastax.oss.driver.api.core.data.UdtValue;
 import com.datastax.oss.driver.api.core.metadata.schema.ColumnMetadata;
 import com.datastax.oss.driver.api.core.metadata.schema.KeyspaceMetadata;
@@ -84,6 +85,9 @@ import org.apache.nifi.record.path.RecordPathResult;
 import org.apache.nifi.serialization.record.MapRecord;
 import org.apache.nifi.serialization.record.Record;
 import org.apache.nifi.serialization.record.RecordSchema;
+import org.apache.nifi.serialization.record.type.ArrayDataType;
+import org.apache.nifi.serialization.record.type.MapDataType;
+import org.apache.nifi.serialization.record.type.RecordDataType;
 import org.apache.nifi.serialization.record.util.DataTypeUtils;
 import io.github.mikethomsen.nifi.cql.cassandra.mapping.CassandraUdtSchemaMapper;
 import io.github.mikethomsen.nifi.cql.cassandra.mapping.CharacterCodec;
@@ -136,6 +140,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -520,6 +525,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             long rowNumber = 0;
 
             List<String> fieldNames = null;
+            List<org.apache.nifi.serialization.record.DataType> convertedTypes = null;
 
             while (resultsIterator.hasNext()) {
                 Row row = resultsIterator.next();
@@ -529,12 +535,14 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
                     Schema generatedAvroSchema = createSchema(results, fieldNames);
                     RecordSchema converted = AvroTypeUtil.createSchema(generatedAvroSchema);
                     schemaReference.set(converted);
+                    convertedTypes = recordTypesNeedingConversion(results.getColumnDefinitions(), fieldNames, converted);
                 }
 
                 Map<String, Object> resultMap = new HashMap<>();
 
                 for (int x = 0; x < fieldNames.size(); x++) {
-                    resultMap.put(fieldNames.get(x), row.getObject(x));
+                    final org.apache.nifi.serialization.record.DataType type = convertedTypes.get(x);
+                    resultMap.put(fieldNames.get(x), type == null ? row.getObject(x) : toRecordValue(row.getObject(x), type));
                 }
 
                 MapRecord record = new MapRecord(schemaReference.get(), resultMap);
@@ -917,6 +925,55 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         }
         final String replaced = text.replaceAll("[^A-Za-z0-9_]+", "_").replaceAll("^_+|_+$", "");
         return replaced.isEmpty() || Character.isDigit(replaced.charAt(0)) ? "_" + replaced : replaced;
+    }
+
+    /**
+     * The record type of each column whose driver value needs {@link #toRecordValue} - one holding a UDT,
+     * tuple or duration, directly or in a collection - and {@code null} for every other column, whose value
+     * the driver already decodes to a JDK type the record accepts as it is.
+     */
+    private static List<org.apache.nifi.serialization.record.DataType> recordTypesNeedingConversion(
+            final ColumnDefinitions columnDefinitions, final List<String> fieldNames, final RecordSchema schema) {
+        final List<org.apache.nifi.serialization.record.DataType> types = new ArrayList<>(fieldNames.size());
+        for (int i = 0; i < fieldNames.size(); i++) {
+            types.add(hasJdkRepresentation(columnDefinitions.get(i).getType())
+                    ? null
+                    : schema.getDataType(fieldNames.get(i)).orElseThrow());
+        }
+        return types;
+    }
+
+    /**
+     * Converts a driver value to the form its record type declares. A UDT becomes a record and a tuple its CQL
+     * literal text, such as {@code (7,'x')}, recursing through collections and nested UDTs. Anything else,
+     * a duration included, is returned as it is: its declared type is a string, which its own text satisfies.
+     */
+    static Object toRecordValue(final Object value, final org.apache.nifi.serialization.record.DataType type) {
+        return switch (value) {
+            case UdtValue udt when type instanceof RecordDataType recordType -> toRecord(udt, recordType.getChildSchema());
+            case TupleValue tuple -> tuple.getFormattedContents();
+            case List<?> list when type instanceof ArrayDataType arrayType ->
+                    list.stream().map(element -> toRecordValue(element, arrayType.getElementType())).toList();
+            case Set<?> set when type instanceof ArrayDataType arrayType -> set.stream()
+                    .map(element -> toRecordValue(element, arrayType.getElementType()))
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            case Map<?, ?> map when type instanceof MapDataType mapType -> {
+                final Map<Object, Object> converted = new LinkedHashMap<>();
+                map.forEach((key, entry) -> converted.put(key, toRecordValue(entry, mapType.getValueType())));
+                yield converted;
+            }
+            case null, default -> value;
+        };
+    }
+
+    private static Record toRecord(final UdtValue udt, final RecordSchema schema) {
+        final List<CqlIdentifier> names = udt.getType().getFieldNames();
+        final Map<String, Object> values = new HashMap<>();
+        for (int i = 0; i < names.size(); i++) {
+            final String name = names.get(i).asInternal();
+            values.put(name, toRecordValue(udt.getObject(i), schema.getDataType(name).orElse(null)));
+        }
+        return new MapRecord(schema, values);
     }
 
     /**
