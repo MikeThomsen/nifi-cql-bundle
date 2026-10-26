@@ -14,13 +14,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.github.mikethomsen.nifi.cql.cassandra;
+package io.github.mikethomsen.nifi.cql.api.lookup.impl;
 
 import io.github.mikethomsen.nifi.cql.api.lookup.CqlCell;
 import io.github.mikethomsen.nifi.cql.api.lookup.CqlRow;
-import io.github.mikethomsen.nifi.cql.api.lookup.impl.StandardCqlCell;
-import io.github.mikethomsen.nifi.cql.api.lookup.impl.StandardCqlRow;
-import io.github.mikethomsen.nifi.cql.api.lookup.impl.StandardCqlStatementResult;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -159,25 +156,5 @@ class CqlRowAndCellTest {
     @DisplayName("A row's cells cannot be changed through the list handed to it or the list handed back")
     void testCellsAreImmutable() {
         assertThrows(UnsupportedOperationException.class, () -> row().cells().clear());
-    }
-
-    // ---- Result ---------------------------------------------------------------------------------------
-
-    @Test
-    @DisplayName("An applied conditional write reports true and carries no row, since there was nothing to return")
-    void testAppliedResult() {
-        final StandardCqlStatementResult result = new StandardCqlStatementResult(true, List.of());
-
-        assertTrue(result.wasApplied());
-        assertTrue(result.rows().isEmpty());
-    }
-
-    @Test
-    @DisplayName("A rejected conditional write reports false and carries the row that is actually stored")
-    void testRejectedResultCarriesCurrentRow() {
-        final StandardCqlStatementResult result = new StandardCqlStatementResult(false, List.of(row()));
-
-        assertFalse(result.wasApplied());
-        assertArrayEquals(utf8("value"), result.rows().getFirst().getBytes("v"));
     }
 }

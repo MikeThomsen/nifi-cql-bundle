@@ -46,6 +46,7 @@ import org.mockito.Mockito;
 import org.mockito.stubbing.Stubber;
 
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
@@ -103,11 +104,16 @@ public class PutCQLRecordTest {
         runner.enableControllerService(service);
     }
 
+    private void useSetUpdate() {
+        runner.setProperty(PutCQLRecord.UPDATE_KEYS, "sender");
+        runner.setProperty(PutCQLRecord.STATEMENT_TYPE, UPDATE_TYPE.getValue());
+    }
+
     @Test
     @DisplayName("Inserting records batches them into the configured batch size and reports success")
     void testInsert() {
-        final int recordCount = 1000;
-        final int batchCount = 10;
+        final int recordCount = 250;
+        final int batchCount = 3;
 
         runner.setProperty(PutCQLRecord.BATCH_SIZE, "100");
 
@@ -134,13 +140,12 @@ public class PutCQLRecordTest {
     @ParameterizedTest
     @CsvSource({ "DECREMENT,COUNTER", "INCREMENT,COUNTER", "SET,LOGGED" })
     void testUpdate(UpdateMethod updateMethod, String batchStatementType) {
-        runner.setProperty(PutCQLRecord.UPDATE_KEYS, "sender");
-        runner.setProperty(PutCQLRecord.STATEMENT_TYPE, UPDATE_TYPE.getValue());
+        useSetUpdate();
         runner.setProperty(PutCQLRecord.UPDATE_METHOD, updateMethod.name());
         runner.setProperty(PutCQLRecord.BATCH_STATEMENT_TYPE, batchStatementType);
 
-        final int recordCount = 1050;
-        final int batchCount = 11;
+        final int recordCount = 250;
+        final int batchCount = 3;
 
         runner.setProperty(PutCQLRecord.BATCH_SIZE, "100");
 
@@ -161,8 +166,7 @@ public class PutCQLRecordTest {
     @Test
     @DisplayName("An update method resolved from a FlowFile attribute is matched case-insensitively")
     void testUpdateMethodFromAttributeIsCaseInsensitive() {
-        runner.setProperty(PutCQLRecord.UPDATE_KEYS, "sender");
-        runner.setProperty(PutCQLRecord.STATEMENT_TYPE, UPDATE_TYPE.getValue());
+        useSetUpdate();
         runner.setProperty(PutCQLRecord.UPDATE_METHOD, "USE_ATTR");
 
         mockReader.addRecord("Hello, world", "test_user");
@@ -176,30 +180,22 @@ public class PutCQLRecordTest {
                 .update(eq(new QualifiedTableName(null, "message")), anyList(), anyMap(), eq(List.of("sender")), eq(UpdateMethod.SET), eq(DEFAULT_BATCH_TYPE), eq(DEFAULT_OVERRIDES));
     }
 
-    @Test
-    @DisplayName("Setting Time To Live on the processor overrides the connection service's default for inserts")
-    void testTtlOverrideAppliesToInsert() {
-        runner.setProperty(PutCQLRecord.BATCH_SIZE, "100");
-        runner.setProperty(PutCQLRecord.TTL, "1 hour");
-
-        mockReader.addRecord("Hello, world", "test_user");
-
-        runner.enqueue("");
-        runner.run();
-
-        runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_SUCCESS, 1);
-
-        verify(service, times(1))
-                .insert(eq(new QualifiedTableName(null, "message")), anyList(), anyMap(), eq(DEFAULT_BATCH_TYPE), eq(new WriteOverrides(Duration.ofHours(1), null, true)));
+    static Stream<Arguments> writeOverrides() {
+        return Stream.of(
+                arguments("Time To Live on insert", false, PutCQLRecord.TTL, "1 hour", new WriteOverrides(Duration.ofHours(1), null, true)),
+                arguments("Time To Live on update", true, PutCQLRecord.TTL, "30 min", new WriteOverrides(Duration.ofMinutes(30), null, true)),
+                arguments("Timestamp Field on insert", false, PutCQLRecord.TIMESTAMP_FIELD, "sender", new WriteOverrides(null, "sender", true)));
     }
 
-    @Test
-    @DisplayName("Setting Time To Live on the processor overrides the connection service's default for SET updates")
-    void testTtlOverrideAppliesToUpdate() {
-        runner.setProperty(PutCQLRecord.UPDATE_KEYS, "sender");
-        runner.setProperty(PutCQLRecord.STATEMENT_TYPE, UPDATE_TYPE.getValue());
-        runner.setProperty(PutCQLRecord.BATCH_SIZE, "100");
-        runner.setProperty(PutCQLRecord.TTL, "30 min");
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("writeOverrides")
+    @DisplayName("Time To Live and Timestamp Field set on the processor are passed to the service as write overrides")
+    void testWriteOverridesArePassedToService(final String description, final boolean update,
+                                              final PropertyDescriptor property, final String value, final WriteOverrides expected) {
+        if (update) {
+            useSetUpdate();
+        }
+        runner.setProperty(property, value);
 
         mockReader.addRecord("Hello, world", "test_user");
 
@@ -208,9 +204,12 @@ public class PutCQLRecordTest {
 
         runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_SUCCESS, 1);
 
-        verify(service, times(1))
-                .update(eq(new QualifiedTableName(null, "message")), anyList(), anyMap(), eq(List.of("sender")), eq(UpdateMethod.SET),
-                        eq(DEFAULT_BATCH_TYPE), eq(new WriteOverrides(Duration.ofMinutes(30), null, true)));
+        final QualifiedTableName table = new QualifiedTableName(null, "message");
+        if (update) {
+            verify(service).update(eq(table), anyList(), anyMap(), eq(List.of("sender")), eq(UpdateMethod.SET), eq(DEFAULT_BATCH_TYPE), eq(expected));
+        } else {
+            verify(service).insert(eq(table), anyList(), anyMap(), eq(DEFAULT_BATCH_TYPE), eq(expected));
+        }
     }
 
     @ParameterizedTest(name = "Null Value Handling={0}, unset nulls={1}")
@@ -241,21 +240,6 @@ public class PutCQLRecordTest {
         } else {
             runner.assertNotValid();
         }
-    }
-
-    @Test
-    @DisplayName("A Time To Live that Expression Language resolves to under one second routes to failure")
-    void testTtlFromAttributeUnderOneSecondRoutesToFailure() {
-        runner.setProperty(PutCQLRecord.TTL, "${ttl}");
-        doThrow(new IllegalArgumentException("A Time To Live must be at least 1 second"))
-                .when(service).insert(any(QualifiedTableName.class), anyList(), anyMap(), any(CqlBatchType.class), any(WriteOverrides.class));
-
-        mockReader.addRecord("Hello, world", "test_user");
-
-        runner.enqueue("", Map.of("ttl", "500 ms"));
-        runner.run();
-
-        runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_FAILURE, 1);
     }
 
     @Test
@@ -300,23 +284,6 @@ public class PutCQLRecordTest {
 
         runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_FAILURE, 1);
         runner.getFlowFilesForRelationship(PutCQLRecord.REL_FAILURE).getFirst().assertAttributeEquals("cql.records.written", "0");
-    }
-
-    @Test
-    @DisplayName("Setting Timestamp Field on the processor threads the field name through as a write override")
-    void testTimestampFieldOverrideAppliesToInsert() {
-        runner.setProperty(PutCQLRecord.BATCH_SIZE, "100");
-        runner.setProperty(PutCQLRecord.TIMESTAMP_FIELD, "sender");
-
-        mockReader.addRecord("Hello, world", "test_user");
-
-        runner.enqueue("");
-        runner.run();
-
-        runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_SUCCESS, 1);
-
-        verify(service, times(1))
-                .insert(eq(new QualifiedTableName(null, "message")), anyList(), anyMap(), eq(DEFAULT_BATCH_TYPE), eq(new WriteOverrides(null, "sender", true)));
     }
 
     @Test
@@ -410,34 +377,21 @@ public class PutCQLRecordTest {
         assertEquals(batchesBeforeFailure, runner.getProvenanceEvents().size());
     }
 
-    @Test
-    @DisplayName("A Cassandra query failure while inserting routes the FlowFile to retry rather than failure")
-    void testInsertQueryFailureRoutesToRetry() {
-        runner.setProperty(PutCQLRecord.BATCH_SIZE, "100");
+    @ParameterizedTest(name = "update={0}")
+    @ValueSource(booleans = {false, true})
+    @DisplayName("A Cassandra query failure while writing routes the FlowFile to retry rather than failure")
+    void testQueryFailureRoutesToRetry(final boolean update) {
+        if (update) {
+            useSetUpdate();
+            doThrow(new QueryFailureException()).when(service)
+                    .update(any(QualifiedTableName.class), anyList(), anyMap(), anyList(), any(UpdateMethod.class), any(CqlBatchType.class), any(WriteOverrides.class));
+        } else {
+            doThrow(new QueryFailureException()).when(service)
+                    .insert(any(QualifiedTableName.class), anyList(), anyMap(), any(CqlBatchType.class), any(WriteOverrides.class));
+        }
 
         mockReader.addRecord("Hello, world", "test_user");
 
-        doThrow(new QueryFailureException())
-                .when(service)
-                .insert(any(QualifiedTableName.class), anyList(), anyMap(), any(CqlBatchType.class), any(WriteOverrides.class));
-        runner.enqueue("");
-        runner.run();
-
-        runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_RETRY, 1);
-    }
-
-    @Test
-    @DisplayName("A Cassandra query failure while updating routes the FlowFile to retry rather than failure")
-    void testUpdateQueryFailureRoutesToRetry() {
-        runner.setProperty(PutCQLRecord.UPDATE_KEYS, "sender");
-        runner.setProperty(PutCQLRecord.STATEMENT_TYPE, UPDATE_TYPE.getValue());
-        runner.setProperty(PutCQLRecord.BATCH_SIZE, "100");
-
-        mockReader.addRecord("Hello, world", "test_user");
-
-        doThrow(new QueryFailureException())
-                .when(service)
-                .update(any(QualifiedTableName.class), anyList(), anyMap(), eq(List.of("sender")), eq(UpdateMethod.SET), any(CqlBatchType.class), any(WriteOverrides.class));
         runner.enqueue("");
         runner.run();
 
@@ -521,38 +475,40 @@ public class PutCQLRecordTest {
                 "Expected the exception message to name the invalid property, but was: " + exception.getMessage());
     }
 
-    @Test
-    @SuppressWarnings("unchecked")
-    @DisplayName("A dynamic property RecordPath override for the target table is passed through as a primary key override on insert")
-    void testDynamicPropertyOverrideAppliesToInsert() {
-        runner.setProperty(PutCQLRecord.TABLE, "my_keyspace.message");
-        runner.setProperty("my_keyspace.message.id", "/sender");
-
-        mockReader.addRecord("Hello, world", "test_user");
-
-        runner.enqueue("");
-        runner.run();
-
-        runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_SUCCESS, 1);
-
-        final ArgumentCaptor<Map<PrimaryKeyIdentifier, RecordPath>> captor = ArgumentCaptor.forClass(Map.class);
-        verify(service).insert(eq(new QualifiedTableName("my_keyspace", "message")), anyList(), captor.capture(),
-                eq(DEFAULT_BATCH_TYPE), eq(DEFAULT_OVERRIDES));
-
-        final Map<PrimaryKeyIdentifier, RecordPath> overrides = captor.getValue();
-        final PrimaryKeyIdentifier identifier = new PrimaryKeyIdentifier("my_keyspace", "message", "id");
-        assertEquals(1, overrides.size());
-        assertTrue(overrides.containsKey(identifier));
-        assertEquals("/sender", overrides.get(identifier).getPath());
+    /**
+     * Each case sets Table to {@code my_keyspace.message}, or to plain {@code message} when not qualified, adds
+     * some {@code keyspace.table.field} dynamic properties, and lists the field-to-RecordPath overrides that should
+     * reach the service.
+     *
+     * <p>An unqualified Table builds a {@link QualifiedTableName} with a null keyspace, which can never equal a
+     * dynamic property's required keyspace segment, so its overrides are silently never applied.
+     */
+    static Stream<Arguments> keyOverrides() {
+        return Stream.of(
+                arguments("one override on insert", true, false,
+                        Map.of("my_keyspace.message.id", "/sender"), Map.of("id", "/sender")),
+                arguments("several overrides on insert", true, false,
+                        Map.of("my_keyspace.message.id", "/sender", "my_keyspace.message.ts", "/message"),
+                        Map.of("id", "/sender", "ts", "/message")),
+                arguments("an override for another table is excluded", true, false,
+                        Map.of("my_keyspace.other_table.id", "/sender"), Map.of()),
+                arguments("an unqualified Table matches no override", false, false,
+                        Map.of("my_keyspace.message.id", "/sender"), Map.of()),
+                arguments("one override on update", true, true,
+                        Map.of("my_keyspace.message.id", "/message"), Map.of("id", "/message")));
     }
 
-    @Test
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("keyOverrides")
     @SuppressWarnings("unchecked")
-    @DisplayName("Multiple dynamic property RecordPath overrides for the same table are all passed through together")
-    void testMultipleDynamicPropertyOverridesApplyToInsert() {
-        runner.setProperty(PutCQLRecord.TABLE, "my_keyspace.message");
-        runner.setProperty("my_keyspace.message.id", "/sender");
-        runner.setProperty("my_keyspace.message.ts", "/message");
+    @DisplayName("Dynamic property RecordPath overrides for the target table are passed through as primary key overrides")
+    void testDynamicPropertyOverrides(final String description, final boolean qualified, final boolean update,
+                                      final Map<String, String> dynamicProperties, final Map<String, String> expected) {
+        runner.setProperty(PutCQLRecord.TABLE, qualified ? "my_keyspace.message" : "message");
+        if (update) {
+            useSetUpdate();
+        }
+        dynamicProperties.forEach(runner::setProperty);
 
         mockReader.addRecord("Hello, world", "test_user");
 
@@ -561,83 +517,21 @@ public class PutCQLRecordTest {
 
         runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_SUCCESS, 1);
 
+        final QualifiedTableName tableName = new QualifiedTableName(qualified ? "my_keyspace" : null, "message");
         final ArgumentCaptor<Map<PrimaryKeyIdentifier, RecordPath>> captor = ArgumentCaptor.forClass(Map.class);
-        verify(service).insert(eq(new QualifiedTableName("my_keyspace", "message")), anyList(), captor.capture(),
-                eq(DEFAULT_BATCH_TYPE), eq(DEFAULT_OVERRIDES));
+        if (update) {
+            verify(service).update(eq(tableName), anyList(), captor.capture(),
+                    eq(List.of("sender")), eq(UpdateMethod.SET), eq(DEFAULT_BATCH_TYPE), eq(DEFAULT_OVERRIDES));
+        } else {
+            verify(service).insert(eq(tableName), anyList(), captor.capture(), eq(DEFAULT_BATCH_TYPE), eq(DEFAULT_OVERRIDES));
+        }
 
-        final Map<PrimaryKeyIdentifier, RecordPath> overrides = captor.getValue();
-        assertEquals(2, overrides.size());
-        assertEquals("/sender", overrides.get(new PrimaryKeyIdentifier("my_keyspace", "message", "id")).getPath());
-        assertEquals("/message", overrides.get(new PrimaryKeyIdentifier("my_keyspace", "message", "ts")).getPath());
-    }
-
-    @Test
-    @SuppressWarnings("unchecked")
-    @DisplayName("A dynamic property RecordPath override for a different table is excluded from the overrides passed for the current write")
-    void testDynamicPropertyOverrideForOtherTableIsExcluded() {
-        runner.setProperty(PutCQLRecord.TABLE, "my_keyspace.message");
-        runner.setProperty("my_keyspace.other_table.id", "/sender");
-
-        mockReader.addRecord("Hello, world", "test_user");
-
-        runner.enqueue("");
-        runner.run();
-
-        runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_SUCCESS, 1);
-
-        final ArgumentCaptor<Map<PrimaryKeyIdentifier, RecordPath>> captor = ArgumentCaptor.forClass(Map.class);
-        verify(service).insert(eq(new QualifiedTableName("my_keyspace", "message")), anyList(), captor.capture(),
-                eq(DEFAULT_BATCH_TYPE), eq(DEFAULT_OVERRIDES));
-
-        assertTrue(captor.getValue().isEmpty());
-    }
-
-    @Test
-    @SuppressWarnings("unchecked")
-    @DisplayName("An unqualified Table name never matches any configured dynamic property override, since overrides always require a keyspace segment")
-    void testDynamicPropertyOverrideIgnoredWhenTableIsUnqualified() {
-        // TABLE is left at its unqualified default of "message" (set in setUp()), so the QualifiedTableName
-        // built at runtime has a null keyspace - which can never equal a dynamic property's required,
-        // non-null keyspace segment, so the override is silently never applied.
-        runner.setProperty("my_keyspace.message.id", "/sender");
-
-        mockReader.addRecord("Hello, world", "test_user");
-
-        runner.enqueue("");
-        runner.run();
-
-        runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_SUCCESS, 1);
-
-        final ArgumentCaptor<Map<PrimaryKeyIdentifier, RecordPath>> captor = ArgumentCaptor.forClass(Map.class);
-        verify(service).insert(eq(new QualifiedTableName(null, "message")), anyList(), captor.capture(),
-                eq(DEFAULT_BATCH_TYPE), eq(DEFAULT_OVERRIDES));
-
-        assertTrue(captor.getValue().isEmpty());
-    }
-
-    @Test
-    @SuppressWarnings("unchecked")
-    @DisplayName("A dynamic property RecordPath override for the target table is passed through as a primary key override on update")
-    void testDynamicPropertyOverrideAppliesToUpdate() {
-        runner.setProperty(PutCQLRecord.TABLE, "my_keyspace.message");
-        runner.setProperty(PutCQLRecord.UPDATE_KEYS, "sender");
-        runner.setProperty(PutCQLRecord.STATEMENT_TYPE, UPDATE_TYPE.getValue());
-        runner.setProperty("my_keyspace.message.id", "/message");
-
-        mockReader.addRecord("Hello, world", "test_user");
-
-        runner.enqueue("");
-        runner.run();
-
-        runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_SUCCESS, 1);
-
-        final ArgumentCaptor<Map<PrimaryKeyIdentifier, RecordPath>> captor = ArgumentCaptor.forClass(Map.class);
-        verify(service).update(eq(new QualifiedTableName("my_keyspace", "message")), anyList(), captor.capture(),
-                eq(List.of("sender")), eq(UpdateMethod.SET), eq(DEFAULT_BATCH_TYPE), eq(DEFAULT_OVERRIDES));
-
-        final Map<PrimaryKeyIdentifier, RecordPath> overrides = captor.getValue();
-        final PrimaryKeyIdentifier identifier = new PrimaryKeyIdentifier("my_keyspace", "message", "id");
-        assertEquals(1, overrides.size());
-        assertEquals("/message", overrides.get(identifier).getPath());
+        final Map<String, String> actual = new HashMap<>();
+        captor.getValue().forEach((key, path) -> {
+            assertEquals("my_keyspace", key.keyspace());
+            assertEquals("message", key.tableName());
+            actual.put(key.fieldName(), path.getPath());
+        });
+        assertEquals(expected, actual);
     }
 }

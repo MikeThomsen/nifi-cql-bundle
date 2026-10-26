@@ -74,16 +74,14 @@ class FlexibleCodecTest {
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("allCodecs")
-    @DisplayName("A null value encodes to null, so a record field that is absent writes nothing rather than failing")
-    void testEncodeNullReturnsNull(final String name, final TypeCodec<?> codec) {
+    @DisplayName("Null encodes to null, formats as the CQL NULL literal and parses back to null")
+    void testNullHandling(final String name, final TypeCodec<?> codec) {
+        // An absent record field writes nothing rather than failing.
         assertNull(encode(codec, null));
-    }
-
-    @ParameterizedTest(name = "{0}")
-    @MethodSource("allCodecs")
-    @DisplayName("A null value formats as the CQL NULL literal")
-    void testFormatNullReturnsNullLiteral(final String name, final TypeCodec<?> codec) {
         assertEquals("NULL", format(codec, null));
+        // parse() delegates straight to the wrapped codec with no conversion of its own. Asserting it here
+        // is what would catch the delegate being swapped for one that reads a different CQL type.
+        assertNull(codec.parse("NULL"));
     }
 
     @ParameterizedTest(name = "{0}")
@@ -117,15 +115,6 @@ class FlexibleCodecTest {
     @DisplayName("Each codec binds the CQL type it is named for, which is the key the registry selects it by")
     void testCqlType(final String name, final TypeCodec<?> codec, final DataType expected) {
         assertEquals(expected, codec.getCqlType());
-    }
-
-    @ParameterizedTest(name = "{0}")
-    @MethodSource("allCodecs")
-    @DisplayName("parse() of the CQL NULL literal yields null rather than a zero value")
-    void testParseNullLiteral(final String name, final TypeCodec<?> codec) {
-        // parse() delegates straight to the wrapped codec with no conversion of its own. Asserting it here
-        // is what would catch the delegate being swapped for one that reads a different CQL type.
-        assertNull(codec.parse("NULL"));
     }
 
     // ---------------------------------------------------------------------------------------------------

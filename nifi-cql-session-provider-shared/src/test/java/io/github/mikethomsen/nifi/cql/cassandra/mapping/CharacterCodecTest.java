@@ -57,10 +57,11 @@ class CharacterCodecTest {
     }
 
     @Test
-    @DisplayName("A null character encodes to null and formats as the CQL NULL literal")
+    @DisplayName("A null character encodes to null and formats as the CQL NULL literal, and a null column decodes to null")
     void testNullHandling() {
         assertNull(codec.encode(null, VERSION));
         assertEquals("NULL", codec.format(null));
+        assertNull(codec.decode(null, VERSION));
     }
 
     @Test
@@ -75,12 +76,6 @@ class CharacterCodecTest {
         final ByteBuffer empty = TypeCodecs.TEXT.encode("", VERSION);
 
         assertNull(codec.decode(empty, VERSION));
-    }
-
-    @Test
-    @DisplayName("A null text column decodes to null")
-    void testNullBytesDecodeToNull() {
-        assertNull(codec.decode(null, VERSION));
     }
 
     @Test
