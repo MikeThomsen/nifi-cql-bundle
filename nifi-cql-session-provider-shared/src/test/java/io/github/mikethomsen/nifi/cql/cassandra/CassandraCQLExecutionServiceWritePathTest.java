@@ -147,7 +147,7 @@ public class CassandraCQLExecutionServiceWritePathTest {
                 new PrimaryKeyIdentifier("ks", "t", "msg_date"), RecordPath.compile("/sent_at"));
 
         final CassandraCQLExecutionService.GeneratedResult result =
-                service.generateInsert(new QualifiedTableName("ks", "t"), schema, overrides, null, false);
+                service.generateInsert(new QualifiedTableName("ks", "t"), schema, overrides, null, null);
 
         assertEquals(List.of("id", "msg_date"), result.keysUsed());
         assertTrue(result.statement().getQuery().contains(":msg_date"),

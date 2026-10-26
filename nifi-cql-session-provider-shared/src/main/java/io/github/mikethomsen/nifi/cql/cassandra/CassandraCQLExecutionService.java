@@ -759,14 +759,18 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
 
     protected GeneratedResult generateInsert(QualifiedTableName table, RecordSchema schema,
                                               Map<PrimaryKeyIdentifier, RecordPath> primaryKeyOverrides,
-                                              Integer ttlSeconds, boolean includeTimestampMarker) {
+                                              Integer ttlSeconds, String timestampField) {
         InsertInto insertQuery = table.isQualified()
                 ? QueryBuilder.insertInto(table.keyspace(), table.table())
                 : QueryBuilder.insertInto(table.table());
         List<String> keys = new ArrayList<>();
 
         RegularInsert regularInsert = null;
+        final String timestampOnlyField = timestampOnlyField(table, timestampField);
         for (String fieldName : columnNamesIncludingOverrideOnly(table, schema, primaryKeyOverrides)) {
+            if (fieldName.equals(timestampOnlyField)) {
+                continue;
+            }
             if (regularInsert == null) {
                 regularInsert = insertQuery.value(fieldName, QueryBuilder.bindMarker(fieldName));
             } else {
@@ -784,7 +788,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         if (ttlSeconds != null) {
             insert = insert.usingTtl(ttlSeconds);
         }
-        if (includeTimestampMarker) {
+        if (timestampField != null) {
             // A separate named bind marker (set by name on the bound statement, not part of "keys") rather than
             // a literal, since - unlike TTL - each record in a batch can carry a different write timestamp.
             insert = insert.usingTimestamp(QueryBuilder.bindMarker(WRITE_TIMESTAMP_BIND_MARKER));
@@ -809,6 +813,28 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
     }
 
     /**
+     * Returns {@code timestampField} when the table has no column of that name, meaning the field only supplies
+     * the write timestamp and must not be written as a column; otherwise returns null. A table whose metadata
+     * cannot be found keeps the field, so the cluster reports the problem as before.
+     */
+    private String timestampOnlyField(QualifiedTableName table, String timestampField) {
+        if (timestampField == null) {
+            return null;
+        }
+
+        final QualifiedTableName resolved = resolveKeyspace(table);
+        if (!resolved.isQualified()) {
+            return null;
+        }
+
+        final boolean tableLacksColumn = cassandraSession.getMetadata().getKeyspace(resolved.keyspace())
+                .flatMap(keyspace -> keyspace.getTable(resolved.table()))
+                .map(tableMetadata -> tableMetadata.getColumn(timestampField).isEmpty())
+                .orElse(false);
+        return tableLacksColumn ? timestampField : null;
+    }
+
+    /**
      * The field names of every primary key override configured for this specific table, resolving an
      * unqualified {@code table} against {@link #defaultKeyspace} the same way {@link #getRecordPathOverride}
      * does.
@@ -825,7 +851,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
     public void insert(QualifiedTableName table, Record record, Map<PrimaryKeyIdentifier, RecordPath> primaryKeyOverrides,
                         WriteOverrides overrides) throws QueryFailureException {
         final boolean useTimestampOverride = hasTimestampOverride(overrides);
-        GeneratedResult result = generateInsert(table, record.getSchema(), primaryKeyOverrides, resolveTtlSeconds(overrides, defaultTtl), useTimestampOverride);
+        GeneratedResult result = generateInsert(table, record.getSchema(), primaryKeyOverrides, resolveTtlSeconds(overrides, defaultTtl), useTimestampOverride ? overrides.timestampField() : null);
         PreparedStatement preparedStatement = prepare(result.statement);
 
         Object[] values = getBindValues(table, primaryKeyOverrides, record, preparedStatement, result.keysUsed);
@@ -856,7 +882,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
 
         final boolean useTimestampOverride = hasTimestampOverride(overrides);
         BatchStatementBuilder builder = BatchStatement.builder(toDriverBatchType(batchType));
-        GeneratedResult result = generateInsert(table, records.get(0).getSchema(), primaryKeyOverrides, resolveTtlSeconds(overrides, defaultTtl), useTimestampOverride);
+        GeneratedResult result = generateInsert(table, records.get(0).getSchema(), primaryKeyOverrides, resolveTtlSeconds(overrides, defaultTtl), useTimestampOverride ? overrides.timestampField() : null);
         PreparedStatement preparedStatement = prepare(result.statement);
 
         if (getLogger().isDebugEnabled()) {
@@ -1080,7 +1106,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
     }
 
     protected GeneratedResult generateUpdate(QualifiedTableName cassandraTable, Record record, Map<PrimaryKeyIdentifier, RecordPath> primaryKeyOverrides,
-                                              List<String> updateKeyNames, UpdateMethod updateMethod, Integer ttlSeconds, boolean includeTimestampMarker) {
+                                              List<String> updateKeyNames, UpdateMethod updateMethod, Integer ttlSeconds, String timestampField) {
         RecordSchema schema = record.getSchema();
 
         List<String> keysUsedInOrder = new ArrayList<>();
@@ -1109,14 +1135,15 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         if (ttlSeconds != null && updateMethod == UpdateMethod.SET) {
             updateQueryStart = updateQueryStart.usingTtl(ttlSeconds);
         }
-        if (includeTimestampMarker && updateMethod == UpdateMethod.SET) {
+        if (timestampField != null && updateMethod == UpdateMethod.SET) {
             updateQueryStart = updateQueryStart.usingTimestamp(QueryBuilder.bindMarker(WRITE_TIMESTAMP_BIND_MARKER));
         }
 
         UpdateWithAssignments updateAssignments = null;
 
+        final String timestampOnlyField = updateMethod == UpdateMethod.SET ? timestampOnlyField(cassandraTable, timestampField) : null;
         List<String> otherKeys = schema.getFieldNames().stream()
-                .filter(fieldName -> !updateKeyNames.contains(fieldName))
+                .filter(fieldName -> !updateKeyNames.contains(fieldName) && !fieldName.equals(timestampOnlyField))
                 .toList();
 
         for (String fieldName : otherKeys) {
@@ -1177,7 +1204,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
     public void update(QualifiedTableName cassandraTable, Record record, Map<PrimaryKeyIdentifier, RecordPath> primaryKeyOverrides,
                         List<String> updateKeys, UpdateMethod updateMethod, WriteOverrides overrides) throws QueryFailureException {
         final boolean useTimestampOverride = hasTimestampOverride(overrides) && updateMethod == UpdateMethod.SET;
-        GeneratedResult result = generateUpdate(cassandraTable, record, primaryKeyOverrides, updateKeys, updateMethod, resolveTtlSeconds(overrides, defaultTtl), useTimestampOverride);
+        GeneratedResult result = generateUpdate(cassandraTable, record, primaryKeyOverrides, updateKeys, updateMethod, resolveTtlSeconds(overrides, defaultTtl), useTimestampOverride ? overrides.timestampField() : null);
         PreparedStatement preparedStatement = prepare(result.statement());
 
         Object[] values = getBindValues(cassandraTable, primaryKeyOverrides, record, preparedStatement, result.keysUsed());
@@ -1559,7 +1586,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         final boolean useTimestampOverride = hasTimestampOverride(overrides) && updateMethod == UpdateMethod.SET;
         BatchStatementBuilder builder = BatchStatement.builder(toDriverBatchType(batchType));
 
-        GeneratedResult result = generateUpdate(cassandraTable, records.get(0), primaryKeyOverrides, updateKeys, updateMethod, resolveTtlSeconds(overrides, defaultTtl), useTimestampOverride);
+        GeneratedResult result = generateUpdate(cassandraTable, records.get(0), primaryKeyOverrides, updateKeys, updateMethod, resolveTtlSeconds(overrides, defaultTtl), useTimestampOverride ? overrides.timestampField() : null);
         PreparedStatement preparedStatement = prepare(result.statement());
 
         if (getLogger().isDebugEnabled()) {

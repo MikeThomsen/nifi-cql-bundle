@@ -285,8 +285,9 @@ public class PutCQLRecord extends AbstractCQLProcessor {
                     SET-method UPDATE statement, instead of the time the statement executes. Useful for safe retries/reprocessing: \
                     resubmitting the same record with the same timestamp is a true no-op rather than a write that could win a \
                     last-write-wins race against different data written to the same row in the meantime. Ignored for Increment/Decrement \
-                    updates, since Cassandra/ScyllaDB do not support a custom write timestamp on counter columns. If not set, the current \
-                    time is used, as usual.""")
+                    updates, since Cassandra/ScyllaDB do not support a custom write timestamp on counter columns. The field is also written \
+                    as a column when the table has a column of the same name, and is used only for the timestamp when it does not. If not \
+                    set, the current time is used, as usual.""")
             .required(false)
             .expressionLanguageSupported(ExpressionLanguageScope.FLOWFILE_ATTRIBUTES)
             .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
