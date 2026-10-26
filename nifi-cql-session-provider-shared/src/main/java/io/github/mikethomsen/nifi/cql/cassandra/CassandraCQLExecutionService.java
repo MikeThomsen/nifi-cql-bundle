@@ -27,6 +27,7 @@ import com.datastax.oss.driver.api.core.cql.BatchStatement;
 import com.datastax.oss.driver.api.core.cql.BatchStatementBuilder;
 import com.datastax.oss.driver.api.core.cql.BatchType;
 import com.datastax.oss.driver.api.core.cql.BoundStatement;
+import com.datastax.oss.driver.api.core.cql.ColumnDefinition;
 import com.datastax.oss.driver.api.core.cql.ColumnDefinitions;
 import com.datastax.oss.driver.api.core.cql.PreparedStatement;
 import com.datastax.oss.driver.api.core.cql.ResultSet;
@@ -133,6 +134,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -142,6 +144,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import javax.net.ssl.SSLContext;
@@ -516,27 +519,22 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             Iterator<Row> resultsIterator = results.iterator();
             long rowNumber = 0;
 
-            List<String> columnNames = new ArrayList<>();
+            List<String> fieldNames = null;
 
             while (resultsIterator.hasNext()) {
                 Row row = resultsIterator.next();
 
                 if (schemaReference.get() == null) {
-                    Schema generatedAvroSchema = createSchema(results);
+                    fieldNames = fieldNames(results.getColumnDefinitions());
+                    Schema generatedAvroSchema = createSchema(results, fieldNames);
                     RecordSchema converted = AvroTypeUtil.createSchema(generatedAvroSchema);
                     schemaReference.set(converted);
                 }
 
-                if (columnNames.isEmpty()) {
-                    row.getColumnDefinitions().forEach(def -> {
-                        columnNames.add(def.getName().toString());
-                    });
-                }
-
                 Map<String, Object> resultMap = new HashMap<>();
 
-                for (int x = 0; x < columnNames.size(); x++) {
-                    resultMap.put(columnNames.get(x), row.getObject(x));
+                for (int x = 0; x < fieldNames.size(); x++) {
+                    resultMap.put(fieldNames.get(x), row.getObject(x));
                 }
 
                 MapRecord record = new MapRecord(schemaReference.get(), resultMap);
@@ -888,21 +886,55 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         return "cassandra";
     }
 
+    /** An Avro name: a letter or underscore, then letters, digits and underscores. */
+    private static final Pattern AVRO_NAME = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
+
+    /**
+     * The record field name for each column of a result, in selection order.
+     *
+     * <p>A column's own name is kept when it is already a legal Avro name, which covers every plain column. An
+     * unaliased function such as {@code system.min(sent_at)} is not, so each run of other characters becomes an
+     * underscore: {@code system_min_sent_at}. A name already taken gets {@code _2}, {@code _3} and so on, so a
+     * column selected twice keeps both values rather than failing the schema or overwriting one with the other.
+     */
+    static List<String> fieldNames(final ColumnDefinitions columnDefinitions) {
+        final List<String> names = new ArrayList<>(columnDefinitions.size());
+        final Set<String> taken = new HashSet<>();
+        for (final ColumnDefinition definition : columnDefinitions) {
+            final String base = avroName(definition.getName().toString());
+            String name = base;
+            for (int suffix = 2; !taken.add(name); suffix++) {
+                name = base + "_" + suffix;
+            }
+            names.add(name);
+        }
+        return names;
+    }
+
+    private static String avroName(final String text) {
+        if (AVRO_NAME.matcher(text).matches()) {
+            return text;
+        }
+        final String replaced = text.replaceAll("[^A-Za-z0-9_]+", "_").replaceAll("^_+|_+$", "");
+        return replaced.isEmpty() || Character.isDigit(replaced.charAt(0)) ? "_" + replaced : replaced;
+    }
+
     /**
      * Creates an Avro schema from the given result set. The metadata (column definitions, data types, etc.) is used
      * to determine a schema for Avro.
      *
      * @param rs The result set from which an Avro schema will be created
+     * @param fieldNames the field name for each column, from {@link #fieldNames}
      * @return An Avro schema corresponding to the given result set's metadata
      */
-    public static Schema createSchema(final ResultSet rs) {
+    static Schema createSchema(final ResultSet rs, final List<String> fieldNames) {
         final ColumnDefinitions columnDefinitions = rs.getColumnDefinitions();
         final int nrOfColumns = (columnDefinitions == null ? 0 : columnDefinitions.size());
         String tableName = "NiFi_Cassandra_Query_Record";
         if (nrOfColumns > 0) {
             String tableNameFromMeta = columnDefinitions.get(0).getTable().toString();
             if (!StringUtils.isBlank(tableNameFromMeta)) {
-                tableName = tableNameFromMeta;
+                tableName = avroName(tableNameFromMeta);
             }
         }
 
@@ -916,7 +948,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
                             + columnDefinitions.get(i).getName());
                 }
 
-                builder.name(columnDefinitions.get(i).getName().toString())
+                builder.name(fieldNames.get(i))
                         .type(CassandraUdtSchemaMapper.toAvroSchema(dataType, udtSchemaCache))
                         .noDefault();
             }

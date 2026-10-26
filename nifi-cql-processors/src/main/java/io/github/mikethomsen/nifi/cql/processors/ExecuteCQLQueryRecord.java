@@ -49,6 +49,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
@@ -70,7 +71,10 @@ import java.util.regex.Pattern;
         @WritesAttribute(attribute = "fragment.index", description = "If 'Max Rows Per Flow File' is set then the position of this FlowFile in the list of "
                 + "outgoing FlowFiles that were all derived from the same result set FlowFile. This can be "
                 + "used in conjunction with the fragment.identifier attribute to know which FlowFiles originated from the same query result set and in what order  "
-                + "FlowFiles were produced")
+                + "FlowFiles were produced"),
+        @WritesAttribute(attribute = "cql.rows.sent", description = "On a FlowFile routed to retry, the number of rows that earlier "
+                + "output had already released downstream before the failure. A retry runs the whole query again, so those rows "
+                + "will be produced a second time.")
 })
 @DynamicProperty(name = "cql.arg.<position>", value = "The value to bind to that bind marker",
         expressionLanguageScope = ExpressionLanguageScope.FLOWFILE_ATTRIBUTES,
@@ -348,6 +352,7 @@ public class ExecuteCQLQueryRecord extends AbstractCQLProcessor {
         final CQLExecutionService cqlExecutionService = context.getProperty(CONNECTION_PROVIDER_SERVICE)
                 .asControllerService(CQLExecutionService.class);
 
+        final Map<String, String> incomingAttributes = fileToProcess == null ? Map.of() : fileToProcess.getAttributes();
         final ExecuteCQLQueryCallback callback = new ExecuteCQLQueryCallback(fileToProcess, writerFactory, session,
                 getLogger(), maxRowsPerFlowFile, outputBatchSize);
 
@@ -376,15 +381,7 @@ public class ExecuteCQLQueryRecord extends AbstractCQLProcessor {
             getLogger().debug("The query took {} seconds.", stopWatch.getDuration(TimeUnit.SECONDS));
         } catch (final QueryFailureException qee) {
             //The logger is called in the client service
-            if (context.hasIncomingConnection()) {
-                if (fileToProcess == null || callback.hasSentOriginal()) {
-                    fileToProcess = session.create();
-                }
-                fileToProcess = session.penalize(fileToProcess);
-                session.transfer(fileToProcess, REL_RETRY);
-            } else {
-                context.yield();
-            }
+            routeFailure(context, session, fileToProcess, incomingAttributes, callback, REL_RETRY);
         // Everything else, not only ProcessException: the service reports a statement the cluster rejects, or
         // parameters that do not fit it, with the driver's own unchecked exceptions. Letting one escape would
         // roll the session back and leave the same FlowFile at the head of the queue to fail again forever.
@@ -392,18 +389,37 @@ public class ExecuteCQLQueryRecord extends AbstractCQLProcessor {
             if (context.hasIncomingConnection()) {
                 logger.error(String.format("Unable to execute CQL select query %s for %s routing to failure",
                         selectQuery, fileToProcess), e);
-                if (fileToProcess == null || callback.hasSentOriginal()) {
-                    fileToProcess = session.create();
-                }
-
-                fileToProcess = session.penalize(fileToProcess);
-                session.transfer(fileToProcess, REL_FAILURE);
-
             } else {
                 logger.error(String.format("Unable to execute CQL select query %s",
                         selectQuery), e);
-                context.yield();
             }
+            routeFailure(context, session, fileToProcess, incomingAttributes, callback, REL_FAILURE);
         }
+    }
+
+    /**
+     * Routes the incoming FlowFile to {@code relationship}, penalized. Once Output Batch Size has released
+     * results, the incoming FlowFile has already gone to 'original' and is no longer the session's to route, so a
+     * replacement carrying its attributes (and, for a retry, how many rows were already sent) takes its place.
+     * With no incoming connection there is nothing to route, so yield.
+     */
+    private void routeFailure(final ProcessContext context, final ProcessSession session, final FlowFile flowFile,
+                              final Map<String, String> incomingAttributes, final ExecuteCQLQueryCallback callback,
+                              final Relationship relationship) {
+        if (!context.hasIncomingConnection()) {
+            context.yield();
+            return;
+        }
+
+        FlowFile toRoute = flowFile;
+        if (toRoute == null || callback.hasSentOriginal()) {
+            toRoute = session.putAllAttributes(session.create(), incomingAttributes);
+        }
+
+        if (relationship == REL_RETRY) {
+            toRoute = session.putAttribute(toRoute, ExecuteCQL.ATTRIBUTE_ROWS_SENT, String.valueOf(callback.rowsReleased()));
+        }
+
+        session.transfer(session.penalize(toRoute), relationship);
     }
 }
