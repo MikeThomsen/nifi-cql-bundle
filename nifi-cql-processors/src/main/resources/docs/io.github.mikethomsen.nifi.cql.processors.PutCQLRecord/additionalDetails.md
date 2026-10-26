@@ -37,8 +37,13 @@ possible, with the following notable behaviors:
 * `UUID` and `TIMEUUID` both bind from a record's `UUID` field type - see
   [Writing to a timeuuid column](#writing-to-a-timeuuid-column) below for the extra requirement `TIMEUUID`
   imposes.
-* `DATE`/`TIME`/`TIMESTAMP` accept `java.sql.Date`/`java.sql.Time`/`Instant`-family values.
-* `LIST`/`SET` accept either a record `ARRAY` or an `Object[]`; `MAP` accepts a record `MAP`. Elements are
+* `DATE`/`TIME`/`TIMESTAMP` accept `java.sql.Date`/`java.sql.Time`/`Instant`-family values. `TIMESTAMP` also
+  accepts ISO-8601 text such as `2026-08-07T14:30:00Z`, or a number or numeric text of milliseconds since the
+  epoch, so a record whose schema was inferred from text still writes.
+* `DECIMAL` and `VARINT` accept any number or numeric text; `VARINT` rejects one with a fractional part.
+* `INET` accepts an IPv4 or IPv6 address literal as text. A host name is rejected rather than looked up.
+* `BLOB` accepts a record's bytes (`ARRAY` of `BYTE`), as the record readers produce them.
+* `LIST`/`SET` accept a record `ARRAY`, or any collection; `MAP` accepts a record `MAP`. Elements are
   converted recursively using these same rules, so a `list<timeuuid>` or `set<uuid>` is subject to the same
   requirements as a scalar column of that type.
 * A Cassandra User Defined Type (UDT) column accepts either a nested `RECORD` or a raw `Map`, with fields

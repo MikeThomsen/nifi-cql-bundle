@@ -94,8 +94,8 @@ public class ExecuteCQLQueryCallback implements CQLQueryCallback {
                 "mime.type", recordWriter.getMimeType(),
                 "record.count", String.valueOf(currentRecordCount));
 
-        this.currentFlowFile = session.putAllAttributes(currentFlowFile, attributes);
-        flowFileBatch.add(currentFlowFile);
+        flowFileBatch.add(session.putAllAttributes(currentFlowFile, attributes));
+        currentFlowFile = null;
         batchRecordCount += currentRecordCount;
     }
 
@@ -128,10 +128,16 @@ public class ExecuteCQLQueryCallback implements CQLQueryCallback {
         }
     }
 
+    /**
+     * Discards everything not yet released. Safe to call more than once - the callback's own error paths call
+     * it before throwing, and the service calls {@link #clear()} again on the way out - which matters because
+     * the session rolls back entirely when asked to remove a FlowFile it has already removed.
+     */
     private void removeUnfinishedFlowFiles() {
-        flowFileBatch.remove(currentFlowFile);
         if (currentFlowFile != null) {
+            closeQuietly(recordWriter);
             session.remove(currentFlowFile);
+            currentFlowFile = null;
         }
         flowFileBatch.forEach(session::remove);
         flowFileBatch.clear();
@@ -160,7 +166,6 @@ public class ExecuteCQLQueryCallback implements CQLQueryCallback {
                     batchRecordCount = 0L;
                 }
             } catch (Exception ex) {
-                closeQuietly(recordWriter);
                 removeUnfinishedFlowFiles();
 
                 throw new ProcessException("Error closing record writer", ex);
@@ -177,8 +182,7 @@ public class ExecuteCQLQueryCallback implements CQLQueryCallback {
             closeQuietly(out);
 
             session.remove(newFlowFile);
-            flowFileBatch.forEach(session::remove);
-            flowFileBatch.clear();
+            removeUnfinishedFlowFiles();
 
             throw new ProcessException("Error creating record writer", ex);
         }
@@ -217,7 +221,6 @@ public class ExecuteCQLQueryCallback implements CQLQueryCallback {
             }
 
         } catch (Exception ex) {
-            closeQuietly(recordWriter);
             removeUnfinishedFlowFiles();
 
             throw new ProcessException("Error writing record", ex);
@@ -226,7 +229,6 @@ public class ExecuteCQLQueryCallback implements CQLQueryCallback {
 
     @Override
     public void clear() {
-        closeQuietly(recordWriter);
         removeUnfinishedFlowFiles();
     }
 

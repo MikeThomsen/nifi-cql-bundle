@@ -130,7 +130,12 @@ import io.github.mikethomsen.nifi.cql.api.service.WriteOverrides;
 import org.apache.nifi.ssl.SSLContextProvider;
 
 import java.io.File;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
@@ -138,6 +143,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -149,6 +155,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -928,42 +935,68 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
     }
 
     /**
-     * The record type of each column whose driver value needs {@link #toRecordValue} - one holding a UDT,
-     * tuple or duration, directly or in a collection - and {@code null} for every other column, whose value
-     * the driver already decodes to a JDK type the record accepts as it is.
+     * The record type of each column whose driver value needs {@link #toRecordValue}, and {@code null} for every
+     * other column, whose value the driver already decodes to a type the record accepts as it is.
      */
     private static List<org.apache.nifi.serialization.record.DataType> recordTypesNeedingConversion(
             final ColumnDefinitions columnDefinitions, final List<String> fieldNames, final RecordSchema schema) {
         final List<org.apache.nifi.serialization.record.DataType> types = new ArrayList<>(fieldNames.size());
         for (int i = 0; i < fieldNames.size(); i++) {
-            types.add(hasJdkRepresentation(columnDefinitions.get(i).getType())
-                    ? null
-                    : schema.getDataType(fieldNames.get(i)).orElseThrow());
+            types.add(needsRecordConversion(columnDefinitions.get(i).getType())
+                    ? schema.getDataType(fieldNames.get(i)).orElseThrow()
+                    : null);
         }
         return types;
     }
 
     /**
-     * Converts a driver value to the form its record type declares. A UDT becomes a record and a tuple its CQL
-     * literal text, such as {@code (7,'x')}, recursing through collections and nested UDTs. Anything else,
-     * a duration included, is returned as it is: its declared type is a string, which its own text satisfies.
+     * Whether the driver decodes a column of this CQL type to something other than what its record type holds:
+     * a UDT, tuple, blob, inet or set anywhere in the type, or any map, since a record map's keys are text.
+     */
+    private static boolean needsRecordConversion(final DataType type) {
+        return switch (type) {
+            case ListType list -> needsRecordConversion(list.getElementType());
+            case SetType set -> true;
+            case MapType map -> true;
+            default -> type instanceof UserDefinedType || type instanceof TupleType
+                    || DataTypes.BLOB.equals(type) || DataTypes.INET.equals(type);
+        };
+    }
+
+    /**
+     * Converts a driver value to the form its record type declares, recursing through collections and nested
+     * UDTs. A UDT becomes a record, a set a list, a blob its bytes, an inet its address text such as
+     * {@code 127.0.0.1}, and a map's keys text. A tuple, or a UDT with no record type to fill (a map key), becomes
+     * its CQL literal text, such as {@code (7,'x')}. Anything else, a duration included, is returned as it is: its
+     * declared type is a string, which its own text satisfies.
      */
     static Object toRecordValue(final Object value, final org.apache.nifi.serialization.record.DataType type) {
         return switch (value) {
             case UdtValue udt when type instanceof RecordDataType recordType -> toRecord(udt, recordType.getChildSchema());
+            case UdtValue udt -> udt.getFormattedContents();
             case TupleValue tuple -> tuple.getFormattedContents();
-            case List<?> list when type instanceof ArrayDataType arrayType ->
-                    list.stream().map(element -> toRecordValue(element, arrayType.getElementType())).toList();
-            case Set<?> set when type instanceof ArrayDataType arrayType -> set.stream()
-                    .map(element -> toRecordValue(element, arrayType.getElementType()))
-                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            case ByteBuffer buffer -> {
+                final byte[] bytes = new byte[buffer.remaining()];
+                buffer.duplicate().get(bytes);
+                yield bytes;
+            }
+            case InetAddress address -> address.getHostAddress();
+            case Collection<?> elements when type instanceof ArrayDataType arrayType ->
+                    elements.stream().map(element -> toRecordValue(element, arrayType.getElementType())).toList();
             case Map<?, ?> map when type instanceof MapDataType mapType -> {
-                final Map<Object, Object> converted = new LinkedHashMap<>();
-                map.forEach((key, entry) -> converted.put(key, toRecordValue(entry, mapType.getValueType())));
+                final Map<String, Object> converted = new LinkedHashMap<>();
+                map.forEach((key, entry) -> converted.put(mapKeyText(key), toRecordValue(entry, mapType.getValueType())));
                 yield converted;
             }
             case null, default -> value;
         };
+    }
+
+    /** A map key as text, written for a blob key the way CQL writes a blob literal, such as {@code 0xcafe}. */
+    private static String mapKeyText(final Object key) {
+        return key instanceof ByteBuffer buffer
+                ? "0x" + HexFormat.of().formatHex((byte[]) toRecordValue(buffer, null))
+                : String.valueOf(toRecordValue(key, null));
     }
 
     private static Record toRecord(final UdtValue udt, final RecordSchema schema) {
@@ -1213,9 +1246,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             final DataType cqlType = bindMarkers.get(index).getType();
             final Object value = parameters.get(index);
 
-            values[index] = cqlType.equals(DataTypes.TIMESTAMP)
-                    ? toInstant(value)
-                    : convertForCqlType(value, cqlType);
+            values[index] = convertForCqlType(value, cqlType);
         }
 
         return values;
@@ -1223,9 +1254,10 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
 
     /**
      * Converts a value bound to a {@code timestamp} column into the {@link Instant} the driver's own codec
-     * expects. Unlike the other scalar types, {@code timestamp} has no {@code Flexible*Codec} registered to
-     * coerce a compatible-but-non-exact value, so an ISO-8601 rendering - the natural form for a parameter
-     * supplied as text - would otherwise fail with the driver's opaque {@code CodecNotFoundException}.
+     * expects. Unlike the integer types, {@code timestamp} has no {@code Flexible*Codec} registered to coerce a
+     * compatible-but-non-exact value, so ISO-8601 text or epoch milliseconds - the natural forms for a parameter,
+     * or for a record whose schema was inferred - would otherwise fail with the driver's opaque
+     * {@code CodecNotFoundException}.
      */
     static Instant toInstant(final Object value) {
         if (value == null) {
@@ -1233,7 +1265,8 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         } else if (value instanceof Instant instantValue) {
             return instantValue;
         } else if (value instanceof java.util.Date dateValue) {
-            return dateValue.toInstant();
+            // Through the epoch milliseconds: java.sql.Date throws from toInstant().
+            return Instant.ofEpochMilli(dateValue.getTime());
         } else if (value instanceof Number numberValue) {
             return Instant.ofEpochMilli(numberValue.longValue());
         }
@@ -1348,14 +1381,14 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             return udtValue;
         }
 
-        // An ARRAY-typed value is normally a List, but Object[] is NiFi's own canonical representation
-        // (DataTypeUtils#toArray always returns one), so both are accepted here for list and set columns.
-        if (cqlType instanceof ListType listType && (value instanceof List<?> || value instanceof Object[])) {
+        // An ARRAY-typed value is normally Object[], NiFi's own canonical representation (DataTypeUtils#toArray
+        // always returns one), but any collection is accepted too, for list and set columns alike.
+        if (cqlType instanceof ListType listType && (value instanceof Collection<?> || value instanceof Object[])) {
             final DataType elementCqlType = listType.getElementType();
             return toElementStream(value).map(element -> convertForCqlType(element, elementCqlType)).toList();
         }
 
-        if (cqlType instanceof SetType setType && (value instanceof Set<?> || value instanceof Object[])) {
+        if (cqlType instanceof SetType setType && (value instanceof Collection<?> || value instanceof Object[])) {
             final DataType elementCqlType = setType.getElementType();
             return toElementStream(value).map(element -> convertForCqlType(element, elementCqlType)).collect(Collectors.toSet());
         }
@@ -1374,6 +1407,24 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
 
         if (cqlType.equals(DataTypes.UUID)) {
             return DataTypeUtils.toUUID(value);
+        }
+
+        // The driver has no codec for these from the forms a record or a parameter commonly holds - bytes as
+        // byte[] or Object[], and the rest as text or another number type - so each is converted here.
+        if (cqlType.equals(DataTypes.BLOB)) {
+            return toByteBuffer(value);
+        }
+        if (cqlType.equals(DataTypes.TIMESTAMP)) {
+            return toInstant(value);
+        }
+        if (cqlType.equals(DataTypes.DECIMAL)) {
+            return toBigDecimal(value);
+        }
+        if (cqlType.equals(DataTypes.VARINT)) {
+            return toBigInteger(value);
+        }
+        if (cqlType.equals(DataTypes.INET)) {
+            return toInetAddress(value);
         }
 
         // The driver's own codec already rejects a non-version-1 UUID bound to a timeuuid column, but only
@@ -1395,6 +1446,106 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
 
     private static Stream<?> toElementStream(final Object value) {
         return (value instanceof Object[] array) ? Arrays.stream(array) : ((Collection<?>) value).stream();
+    }
+
+    /** Bytes for a blob column, from a {@code byte[]}, or an {@code Object[]} or collection of bytes. */
+    private static Object toByteBuffer(final Object value) {
+        return switch (value) {
+            case byte[] bytes -> ByteBuffer.wrap(bytes);
+            case Object[] elements -> ByteBuffer.wrap(toBytes(elements));
+            case Collection<?> elements -> ByteBuffer.wrap(toBytes(elements.toArray()));
+            default -> value;
+        };
+    }
+
+    private static byte[] toBytes(final Object[] elements) {
+        final byte[] bytes = new byte[elements.length];
+        for (int i = 0; i < elements.length; i++) {
+            if (!(elements[i] instanceof Number number)) {
+                throw new IllegalArgumentException(String.format(
+                        "Value cannot be bound to a blob column: element %d is %s, not a byte", i, elements[i]));
+            }
+            bytes[i] = number.byteValue();
+        }
+        return bytes;
+    }
+
+    private static BigDecimal toBigDecimal(final Object value) {
+        return switch (value) {
+            case BigDecimal decimal -> decimal;
+            case BigInteger integer -> new BigDecimal(integer);
+            // Through the shortest decimal text that round-trips, so 1.1 binds as 1.1 rather than 1.100000000000000088...
+            case Double number -> new BigDecimal(number.toString());
+            case Float number -> new BigDecimal(number.toString());
+            case Number number -> BigDecimal.valueOf(number.longValue());
+            default -> parseNumber(value, BigDecimal::new, "decimal");
+        };
+    }
+
+    private static BigInteger toBigInteger(final Object value) {
+        return switch (value) {
+            case BigInteger integer -> integer;
+            case BigDecimal decimal -> wholeNumber(decimal, value);
+            case Double number -> wholeNumber(new BigDecimal(number.toString()), value);
+            case Float number -> wholeNumber(new BigDecimal(number.toString()), value);
+            case Number number -> BigInteger.valueOf(number.longValue());
+            default -> parseNumber(value, BigInteger::new, "varint");
+        };
+    }
+
+    private static BigInteger wholeNumber(final BigDecimal decimal, final Object value) {
+        try {
+            return decimal.toBigIntegerExact();
+        } catch (final ArithmeticException e) {
+            throw new IllegalArgumentException(String.format("Value '%s' cannot be bound to a varint column: it is not a whole number", value), e);
+        }
+    }
+
+    private static <T> T parseNumber(final Object value, final Function<String, T> parser, final String cqlType) {
+        final String text = value.toString().trim();
+        try {
+            return parser.apply(text);
+        } catch (final NumberFormatException e) {
+            throw new IllegalArgumentException(String.format("Value '%s' cannot be bound to a %s column: it is not a number", text, cqlType), e);
+        }
+    }
+
+    private static final Pattern IPV4_LITERAL = Pattern.compile("(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})");
+
+    /**
+     * An inet value from an address literal. A host name is rejected rather than resolved: resolving it would be
+     * a DNS lookup per value, and the address would depend on where and when the flow ran.
+     */
+    private static InetAddress toInetAddress(final Object value) {
+        if (value instanceof InetAddress address) {
+            return address;
+        }
+
+        final String text = value.toString().trim();
+        try {
+            final Matcher ipv4 = IPV4_LITERAL.matcher(text);
+            if (ipv4.matches()) {
+                final byte[] octets = new byte[4];
+                for (int i = 0; i < octets.length; i++) {
+                    final int octet = Integer.parseInt(ipv4.group(i + 1));
+                    if (octet > 255) {
+                        throw new UnknownHostException(text);
+                    }
+                    octets[i] = (byte) octet;
+                }
+                return InetAddress.getByAddress(octets);
+            }
+            // A host name cannot contain a colon, so getByName parses this as an IPv6 literal, failing rather
+            // than falling back to a lookup when it is not one.
+            if (text.contains(":")) {
+                return InetAddress.getByName(text);
+            }
+        } catch (final UnknownHostException e) {
+            // reported below, the same as text that is no address at all
+        }
+
+        throw new IllegalArgumentException(String.format(
+                "Value '%s' cannot be bound to an inet column: expected an IPv4 or IPv6 address literal", text));
     }
 
     @Override
