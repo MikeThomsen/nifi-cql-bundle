@@ -89,6 +89,12 @@ Result set values are converted to an Avro schema (and from there, whatever the 
 produces) using the same type mapping `PutCQLRecord` uses for writes, in reverse. The value placed into each
 record field is whatever the DataStax driver's own codec decoded the column into, unchanged.
 
+Each record field is named after its column. A name that is not a legal Avro name, such as the
+`system.min(sent_at)` a cluster gives an unaliased function, has each run of other characters replaced with
+an underscore: `system_min_sent_at`. A name already used in the row gets `_2`, `_3` and so on, so a column
+selected twice comes back as `v` and `v_2`. Give a column an alias (`SELECT min(sent_at) AS first_sent`) to
+choose its field name.
+
 * `BOOLEAN` &rarr; boolean; `TINYINT`/`SMALLINT`/`INT` &rarr; int (Avro has no byte/short primitive, so these
   widen); `BIGINT`/`COUNTER` &rarr; long; `FLOAT` &rarr; float; `DOUBLE` &rarr; double; `BLOB` &rarr; bytes;
   `ASCII`/`TEXT` &rarr; string.
@@ -161,9 +167,11 @@ Both are optional; when unset, the connection service's own configured values ap
   before the final row count is known - which is exactly why `fragment.count` is intentionally left unset
   whenever _Output Batch Size_ is configured: earlier FlowFiles may already have been committed downstream
   before the true total could be determined. One further consequence: if the query fails after early commits
-  have already released the incoming FlowFile to `original`, that FlowFile cannot be recalled, so a new,
-  empty FlowFile is created to carry the retry signal to `retry` in its place - and the results committed
-  before the failure stay downstream, so a retried query delivers those rows a second time.
+  have already released the incoming FlowFile to `original`, that FlowFile cannot be recalled, so a new
+  FlowFile carrying a copy of its attributes goes to `retry` or `failure` in its place. Its content is empty,
+  so a query built from attributes can be re-run from it, but not one that depends on the content. The
+  results committed before the failure stay downstream, so a retried query delivers those rows a second
+  time; the retried FlowFile's `cql.rows.sent` attribute says how many rows that is.
 
 If the incoming FlowFile's query returns zero rows, no output FlowFile is created at all, and the incoming
 FlowFile (if any) is routed directly to `original`.

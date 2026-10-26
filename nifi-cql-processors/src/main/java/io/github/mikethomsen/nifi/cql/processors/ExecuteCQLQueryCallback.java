@@ -54,6 +54,8 @@ public class ExecuteCQLQueryCallback implements CQLQueryCallback {
 
     private int fragmentIndex;
     private long currentRecordCount;
+    private long batchRecordCount;
+    private long rowsReleased;
     private UUID fragmentId;
 
     public ExecuteCQLQueryCallback(FlowFile parentFlowFile,
@@ -94,6 +96,7 @@ public class ExecuteCQLQueryCallback implements CQLQueryCallback {
 
         this.currentFlowFile = session.putAllAttributes(currentFlowFile, attributes);
         flowFileBatch.add(currentFlowFile);
+        batchRecordCount += currentRecordCount;
     }
 
     /**
@@ -153,6 +156,8 @@ public class ExecuteCQLQueryCallback implements CQLQueryCallback {
 
                     session.commitAsync();
                     flowFileBatch.clear();
+                    rowsReleased += batchRecordCount;
+                    batchRecordCount = 0L;
                 }
             } catch (Exception ex) {
                 closeQuietly(recordWriter);
@@ -207,6 +212,8 @@ public class ExecuteCQLQueryCallback implements CQLQueryCallback {
 
                 session.transfer(flowFileBatch, REL_SUCCESS);
                 flowFileBatch.clear();
+                rowsReleased += batchRecordCount;
+                batchRecordCount = 0L;
             }
 
         } catch (Exception ex) {
@@ -221,6 +228,11 @@ public class ExecuteCQLQueryCallback implements CQLQueryCallback {
     public void clear() {
         closeQuietly(recordWriter);
         removeUnfinishedFlowFiles();
+    }
+
+    /** @return the rows that have already been released downstream, and so cannot be recalled */
+    public long rowsReleased() {
+        return rowsReleased;
     }
 
     @Override
