@@ -109,15 +109,16 @@ choose its field name.
   [String-declared fields and their values](#string-declared-fields-and-their-values) below, which explains
   why and what it means for a downstream consumer.
 * `LIST`/`SET` become an Avro array, `MAP` becomes an Avro map, and a Cassandra User Defined Type (UDT)
-  becomes a nested named Avro record, all recursively, using the same per-element type mapping described
-  above - a UDT nested inside another UDT, or inside a `LIST`/`SET`/`MAP`, is resolved the same way with no
-  special-casing. Note that Avro maps require string keys: a CQL `map` whose key type isn't already
+  becomes a nested named Avro record holding a record value, all recursively, using the same per-element
+  type mapping described above - a UDT nested inside another UDT, or inside a `LIST`/`SET`/`MAP`, is
+  resolved the same way with no special-casing. Note that Avro maps require string keys: a CQL `map` whose key type isn't already
   string-like is represented with its real (non-string) key objects in the underlying data even though the
   declared schema implies string keys.
 * A CQL type with no mapping defined above - `DURATION`, `TUPLE`, `VECTOR`, or any future/custom type - is
-  represented as a string field holding the driver's own decoded object. This keeps one unusual column from
-  failing the entire query; it does not attempt to give the column's structure (a tuple's individual
-  elements, a vector's components) back as anything richer.
+  represented as a string field. A tuple's value is its CQL literal, such as `(7,'x')`, and a duration's is
+  its CQL text, such as `1h30m`; any other such type holds the driver's own decoded object. This keeps one
+  unusual column from failing the entire query; it does not attempt to give the column's structure (a
+  tuple's individual elements, a vector's components) back as anything richer.
 
 ### String-declared fields and their values
 
