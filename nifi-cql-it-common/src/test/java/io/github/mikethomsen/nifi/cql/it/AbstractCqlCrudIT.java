@@ -274,6 +274,37 @@ public abstract class AbstractCqlCrudIT {
         assertEquals(toEpochMicros(whenSent), writeTimeMicros);
     }
 
+    @Test
+    @DisplayName("A Timestamp Field with no matching table column only sets the write timestamp")
+    void testTimestampFieldWithoutColumnIsNotWritten() {
+        final Instant insertTime = Instant.now().minus(Duration.ofDays(30)).truncatedTo(ChronoUnit.MILLIS);
+        final Instant updateTime = Instant.now().minus(Duration.ofDays(1)).truncatedTo(ChronoUnit.MILLIS);
+        final QualifiedTableName table = new QualifiedTableName(null, "message");
+        final WriteOverrides overrides = new WriteOverrides(null, "event_time", false);
+
+        sessionProvider.insert(table, withEventTime(messageRecord("event.time.sender", "event.time.receiver", "original", insertTime), insertTime),
+                Map.of(), overrides);
+        assertEquals(toEpochMicros(insertTime), writeTimeForEventTimeSender());
+
+        sessionProvider.update(table, withEventTime(messageRecord("event.time.sender", "event.time.receiver", "updated", insertTime), updateTime),
+                Map.of(), List.of("sender", "receiver", "when_sent"), UpdateMethod.SET, overrides);
+        assertEquals(toEpochMicros(updateTime), writeTimeForEventTimeSender());
+    }
+
+    /** Copies a message record and adds an "event_time" field, which the message table has no column for. */
+    private static MapRecord withEventTime(final MapRecord record, final Instant eventTime) {
+        final List<RecordField> fields = new ArrayList<>(record.getSchema().getFields());
+        fields.add(new RecordField("event_time", RecordFieldType.TIMESTAMP.getDataType()));
+        final Map<String, Object> values = new HashMap<>(record.toMap());
+        values.put("event_time", eventTime);
+        return new MapRecord(new SimpleRecordSchema(fields), values);
+    }
+
+    private long writeTimeForEventTimeSender() {
+        return session.execute("select WRITETIME(message) as write_time from testspace.message where sender = 'event.time.sender'")
+                .iterator().next().getLong("write_time");
+    }
+
     private long writeTimeForBatchTimestampSender(String receiver) {
         return session.execute(String.format(
                 "select WRITETIME(message) as write_time from testspace.message where sender = 'batch.timestamp.sender' and receiver = '%s'", receiver))

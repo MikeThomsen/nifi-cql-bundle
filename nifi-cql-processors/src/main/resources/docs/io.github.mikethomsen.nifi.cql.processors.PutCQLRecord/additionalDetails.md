@@ -107,6 +107,8 @@ a rollback can also be triggered by a failure that has nothing to do with Run Du
   last-write-wins race against different data written to the same row in the meantime. Also ignored for
   `INCREMENT`/`DECREMENT`, since Cassandra/ScyllaDB do not support a custom write timestamp on counter
   columns.
+  If the table has a column with the same name as the field, the field is also written to it; if not, the
+  field only supplies the timestamp and is not written.
 
 ## Null values
 
