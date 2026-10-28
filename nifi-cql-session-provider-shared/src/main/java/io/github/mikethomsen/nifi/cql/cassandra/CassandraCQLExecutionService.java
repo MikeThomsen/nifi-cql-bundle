@@ -760,7 +760,11 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         } else if (value instanceof java.util.Date dateValue) {
             instant = dateValue.toInstant();
         } else if (value instanceof Number numberValue) {
-            instant = Instant.ofEpochMilli(ExactNumbers.toEpochMillis(numberValue));
+            try {
+                instant = Instant.ofEpochMilli(ExactNumbers.toEpochMillis(numberValue));
+            } catch (final RejectedValueException e) {
+                throw new RejectedValueException("A write timestamp cannot be derived: " + e.getMessage(), e);
+            }
         } else {
             throw new IllegalArgumentException("Cannot derive a write timestamp from a value of type "
                     + (value == null ? "null" : value.getClass().getName()));
@@ -1395,8 +1399,8 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
                 return Instant.ofEpochMilli(Long.parseLong(text));
             } catch (final NumberFormatException ignored) {
                 throw new RejectedValueException(String.format(
-                        "Value%s cannot be bound to a timestamp column: expected an ISO-8601 instant such as "
-                                + "2026-08-07T14:30:00Z, or a count of milliseconds since the epoch", shown(text)), e);
+                        "the value%s is neither an ISO-8601 instant such as 2026-08-07T14:30:00Z nor a count of "
+                                + "milliseconds since the epoch", shown(text)), e);
             }
         }
     }
@@ -1607,7 +1611,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         }
         // The counter codec only binds a number, and an ExecuteCQL parameter is always text.
         if (cqlType.equals(DataTypes.COUNTER)) {
-            return value instanceof Number ? value : parseNumber(value, Long::valueOf, "counter");
+            return value instanceof Number ? value : ExactNumbers.toLong(ExactNumbers.parse(value.toString()), "counter");
         }
         if (cqlType.equals(DataTypes.DURATION)) {
             return toCqlDuration(value);
@@ -1621,7 +1625,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             final UUID uuid = DataTypeUtils.toUUID(value);
             if (uuid.version() != 1) {
                 throw new RejectedValueException(String.format(
-                        "Value%s is not a valid timeuuid: version %d, but timeuuid columns require a version 1 (time-based) UUID",
+                        "the value%s is a version %d UUID, but a timeuuid must be version 1 (time-based)",
                         shown(uuid), uuid.version()), null);
             }
             return uuid;
@@ -1645,16 +1649,15 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             try {
                 return (TupleValue) codecs.codecFor(tupleType).parse(value.toString().trim());
             } catch (final IllegalArgumentException e) {
-                throw new RejectedValueException(String.format("Value%s cannot be bound to a %s column: it is not a tuple literal",
-                        shown(value), tupleType.asCql(false, true)), e);
+                throw new RejectedValueException(String.format("the value%s is not a tuple literal", shown(value)), e);
             }
         }
 
         final List<?> elements = toElementStream(value).toList();
         final List<DataType> componentTypes = tupleType.getComponentTypes();
         if (elements.size() != componentTypes.size()) {
-            throw new RejectedValueException(String.format("A %s column needs %d elements, but the value has %d",
-                    tupleType.asCql(false, true), componentTypes.size(), elements.size()), null);
+            throw new RejectedValueException(String.format("the value has %d elements, but the tuple has %d",
+                    elements.size(), componentTypes.size()), null);
         }
 
         TupleValue tuple = tupleType.newValue();
@@ -1677,7 +1680,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         try {
             return CqlDuration.from(text);
         } catch (final IllegalArgumentException e) {
-            throw new RejectedValueException(String.format("Value%s cannot be bound to a duration column: it is not a duration such as 1h30m or PT1H30M", shown(text)), e);
+            throw new RejectedValueException(String.format("the value%s is not a duration such as 1h30m or PT1H30M", shown(text)), e);
         }
     }
 
@@ -1706,7 +1709,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             final long number = elements[i] instanceof Number value ? toWholeNumber(value) : Long.MIN_VALUE;
             if (number < Byte.MIN_VALUE || number > 255) {
                 throw new RejectedValueException(String.format(
-                        "Value cannot be bound to a blob column: element %d%s is not a byte, a whole number from -128 to 255",
+                        "element %d%s is not a byte, a whole number from -128 to 255",
                         i, shown(elements[i])), null);
             }
             bytes[i] = (byte) number;
@@ -1731,7 +1734,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             case Double number -> new BigDecimal(number.toString());
             case Float number -> new BigDecimal(number.toString());
             case Number number -> BigDecimal.valueOf(number.longValue());
-            default -> parseNumber(value, BigDecimal::new, "decimal");
+            default -> parseNumber(value, BigDecimal::new);
         };
     }
 
@@ -1742,7 +1745,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             case Double number -> wholeNumber(new BigDecimal(number.toString()), value);
             case Float number -> wholeNumber(new BigDecimal(number.toString()), value);
             case Number number -> BigInteger.valueOf(number.longValue());
-            default -> parseNumber(value, BigInteger::new, "varint");
+            default -> parseNumber(value, BigInteger::new);
         };
     }
 
@@ -1750,16 +1753,16 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         try {
             return decimal.toBigIntegerExact();
         } catch (final ArithmeticException e) {
-            throw new RejectedValueException(String.format("Value%s cannot be bound to a varint column: it is not a whole number", shown(value)), e);
+            throw new RejectedValueException(String.format("the value%s is not a whole number", shown(value)), e);
         }
     }
 
-    private static <T> T parseNumber(final Object value, final Function<String, T> parser, final String cqlType) {
+    private static <T> T parseNumber(final Object value, final Function<String, T> parser) {
         final String text = value.toString().trim();
         try {
             return parser.apply(text);
         } catch (final NumberFormatException e) {
-            throw new RejectedValueException(String.format("Value%s cannot be bound to a %s column: it is not a number", shown(text), cqlType), e);
+            throw new RejectedValueException(String.format("the value%s is not a number", shown(text)), e);
         }
     }
 
@@ -1798,7 +1801,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         }
 
         throw new RejectedValueException(String.format(
-                "Value%s cannot be bound to an inet column: expected an IPv4 or IPv6 address literal", shown(text)), null);
+                "the value%s is not an IPv4 or IPv6 address literal", shown(text)), null);
     }
 
     @Override

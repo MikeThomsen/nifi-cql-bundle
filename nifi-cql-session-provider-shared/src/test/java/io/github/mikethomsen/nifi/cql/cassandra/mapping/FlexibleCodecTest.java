@@ -152,6 +152,7 @@ class FlexibleCodecTest {
                 arguments("int <- Byte", new FlexibleIntCodec(), (byte) 42, intBytes),
                 arguments("int <- Double", new FlexibleIntCodec(), 42.0d, intBytes),
                 arguments("int <- String", new FlexibleIntCodec(), "42", intBytes),
+                arguments("int <- whole-number String with a decimal point and spaces", new FlexibleIntCodec(), " 42.0 ", intBytes),
                 arguments("int <- Integer beyond short range", new FlexibleIntCodec(), 70_000, wideIntBytes),
                 arguments("int <- Long beyond short range", new FlexibleIntCodec(), 70_000L, wideIntBytes),
                 arguments("int <- String beyond short range", new FlexibleIntCodec(), "70000", wideIntBytes),
@@ -259,6 +260,9 @@ class FlexibleCodecTest {
         return Stream.of(
                 arguments("smallint <- Integer too large", new FlexibleSmallIntCodec(), 40_000),
                 arguments("tinyint <- Integer too large", new FlexibleTinyIntCodec(), 300),
+                arguments("tinyint <- String too large", new FlexibleTinyIntCodec(), "300"),
+                arguments("int <- String with a fraction", new FlexibleIntCodec(), "3.7"),
+                arguments("bigint <- String too long to be a number", new FlexibleBigIntCodec(), "1".repeat(101)),
                 arguments("int <- Long too large", new FlexibleIntCodec(), Long.MAX_VALUE),
                 arguments("bigint <- BigInteger too large", new FlexibleBigIntCodec(), new BigInteger("12345678901234567890")),
                 arguments("int <- Double with a fraction", new FlexibleIntCodec(), 3.7d),
@@ -272,11 +276,11 @@ class FlexibleCodecTest {
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("numericRejections")
-    @DisplayName("A number that does not fit the column is rejected, naming the column type but not the value")
+    @DisplayName("A number that does not fit the column is rejected with the reason alone, which the caller prefixes with the column, and not the value")
     void testNumberThatDoesNotFitIsRejected(final String name, final TypeCodec<?> codec, final Object input) {
         final RejectedValueException thrown = assertThrows(RejectedValueException.class, () -> encode(codec, input));
 
-        assertTrue(thrown.getMessage().contains(codec.getCqlType().asCql(false, true)), thrown.getMessage());
+        assertTrue(thrown.getMessage().startsWith("the value "), thrown.getMessage());
         assertFalse(thrown.getMessage().contains(String.valueOf(input)), thrown.getMessage());
     }
 

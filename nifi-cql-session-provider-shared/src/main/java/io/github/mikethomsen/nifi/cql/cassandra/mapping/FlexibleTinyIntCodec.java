@@ -69,13 +69,15 @@ public class FlexibleTinyIntCodec implements TypeCodec<Object> {
     }
 
     /**
-     * A number is converted by {@link ExactNumbers}, which rejects one that does not fit a tinyint or has a fraction
-     * instead of narrowing it. Text and anything else go through NiFi's {@code DataTypeUtils}, which already
-     * parses text exactly.
+     * A number, or text read as one, is converted by {@link ExactNumbers}, which rejects a value that does not fit
+     * a tinyint or has a fraction instead of narrowing it, and accepts whole-number text such as {@code "42.0"}.
+     * Anything else goes through NiFi's {@code DataTypeUtils}.
      */
     private Byte convert(final Object value) {
-        return value instanceof Number number
-                ? ExactNumbers.toByte(number, "tinyint")
-                : DataTypeUtils.toByte(value, getCqlType().toString());
+        return switch (value) {
+            case Number number -> ExactNumbers.toByte(number, "tinyint");
+            case String text -> ExactNumbers.toByte(ExactNumbers.parse(text), "tinyint");
+            default -> DataTypeUtils.toByte(value, getCqlType().toString());
+        };
     }
 }

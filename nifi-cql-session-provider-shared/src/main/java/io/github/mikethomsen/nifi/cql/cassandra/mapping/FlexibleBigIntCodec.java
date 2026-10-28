@@ -69,13 +69,15 @@ public class FlexibleBigIntCodec implements TypeCodec<Object> {
     }
 
     /**
-     * A number is converted by {@link ExactNumbers}, which rejects one that does not fit a bigint or has a fraction
-     * instead of narrowing it. Text and anything else go through NiFi's {@code DataTypeUtils}, which already
-     * parses text exactly.
+     * A number, or text read as one, is converted by {@link ExactNumbers}, which rejects a value that does not fit
+     * a bigint or has a fraction instead of narrowing it, and accepts whole-number text such as {@code "42.0"}.
+     * Anything else goes through NiFi's {@code DataTypeUtils}.
      */
     private Long convert(final Object value) {
-        return value instanceof Number number
-                ? ExactNumbers.toLong(number, "bigint")
-                : DataTypeUtils.toLong(value, getCqlType().toString());
+        return switch (value) {
+            case Number number -> ExactNumbers.toLong(number, "bigint");
+            case String text -> ExactNumbers.toLong(ExactNumbers.parse(text), "bigint");
+            default -> DataTypeUtils.toLong(value, getCqlType().toString());
+        };
     }
 }
