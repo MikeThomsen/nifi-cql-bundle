@@ -98,6 +98,14 @@ an underscore: `system_min_sent_at`. A name already used in the row gets `_2`, `
 selected twice comes back as `v` and `v_2`. Give a column an alias (`SELECT min(sent_at) AS first_sent`) to
 choose its field name.
 
+The fields of a User Defined Type (UDT) are not renamed this way: each keeps its CQL name, and so does the
+type itself. A UDT with a quoted field whose name is not a legal Avro name, such as `"first-name"`, therefore
+cannot be read as a whole. Any query that selects the column fails with `SchemaParseException: Illegal
+character in: first-name`, and the FlowFile is routed to `failure`. The same applies to a `SELECT` run by
+_ExecuteCQL_. To read such a UDT, select its fields individually, which makes each one an ordinary column:
+`SELECT k, p."first-name" AS first_name, p.last FROM ks.t`. Without an alias, the field comes back named
+`p_first_name`.
+
 * `BOOLEAN` &rarr; boolean; `TINYINT`/`SMALLINT`/`INT` &rarr; int (Avro has no byte/short primitive, so these
   widen); `BIGINT`/`COUNTER` &rarr; long; `FLOAT` &rarr; float; `DOUBLE` &rarr; double; `BLOB` &rarr; bytes,
   holding a `byte[]`; `ASCII`/`TEXT` &rarr; string.
