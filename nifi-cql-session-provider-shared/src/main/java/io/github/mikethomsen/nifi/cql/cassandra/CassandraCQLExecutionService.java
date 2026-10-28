@@ -849,8 +849,21 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         }
 
         return fieldNames.stream()
-                .filter(fieldName -> !overrideSources.contains(fieldName) || metadata.get().getColumn(fieldName).isPresent())
+                .filter(fieldName -> !overrideSources.contains(fieldName) || hasColumn(metadata.get(), fieldName))
                 .toList();
+    }
+
+    /**
+     * Whether the table has a column for this record field. The name is read as CQL, as an unquoted field name is
+     * everywhere else; one that is not a plain identifier, such as the reserved word {@code order}, cannot be read
+     * that way, so it is matched exactly instead.
+     */
+    private static boolean hasColumn(final TableMetadata table, final String fieldName) {
+        try {
+            return table.getColumn(fieldName).isPresent();
+        } catch (final IllegalArgumentException e) {
+            return table.getColumn(CqlIdentifier.fromInternal(fieldName)).isPresent();
+        }
     }
 
     /**

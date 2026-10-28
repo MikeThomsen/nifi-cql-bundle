@@ -171,20 +171,21 @@ public abstract class AbstractCqlCrudIT {
     }
 
     @Test
-    @DisplayName("A key read from a nested field is written, whatever the case of the override's keyspace and table, and the nested field is not written as a column")
+    @DisplayName("A key read from a nested field is written, whatever the case of the override's keyspace and table, and the nested field is not written as a column, even when its name is a reserved word")
     void testOverrideFromNestedFieldWithMixedCaseNames() {
         final QualifiedTableName table = new QualifiedTableName(null, "message");
         final Map<PrimaryKeyIdentifier, RecordPath> overrides = Map.of(
-                new PrimaryKeyIdentifier("TESTSPACE", "Message", "sender"), RecordPath.compile("/customer/id"));
+                new PrimaryKeyIdentifier("TESTSPACE", "Message", "sender"), RecordPath.compile("/order/id"));
         final Instant whenSent = Instant.parse("2026-10-28T12:00:00Z");
-        // The shape of the PutCQLRecord docs' example, as a JSON reader produces it: the key is inside a nested record.
+        // The shape of the PutCQLRecord docs' example, as a JSON reader produces it: the key is inside a nested record,
+        // here under a field named after a reserved word, which cannot be read as an unquoted CQL name.
         final RecordSchema customerSchema = new SimpleRecordSchema(List.of(new RecordField("id", RecordFieldType.STRING.getDataType())));
         final java.util.function.Function<String, MapRecord> record = text -> new MapRecord(new SimpleRecordSchema(List.of(
-                        new RecordField("customer", RecordFieldType.RECORD.getRecordDataType(customerSchema)),
+                        new RecordField("order", RecordFieldType.RECORD.getRecordDataType(customerSchema)),
                         new RecordField("receiver", RecordFieldType.STRING.getDataType()),
                         new RecordField("message", RecordFieldType.STRING.getDataType()),
                         new RecordField("when_sent", RecordFieldType.TIMESTAMP.getDataType()))),
-                Map.of("customer", new MapRecord(customerSchema, Map.of("id", "nested-sender")), "receiver", "r", "message", text, "when_sent", whenSent));
+                Map.of("order", new MapRecord(customerSchema, Map.of("id", "nested-sender")), "receiver", "r", "message", text, "when_sent", whenSent));
 
         sessionProvider.insert(table, record.apply("inserted"), overrides, WriteOverrides.NONE);
         sessionProvider.update(table, record.apply("updated"), overrides, List.of("sender", "receiver", "when_sent"),
