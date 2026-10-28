@@ -22,7 +22,9 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.math.BigDecimal;
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
 import java.util.stream.Stream;
@@ -31,6 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 
@@ -83,5 +86,17 @@ public class CassandraCQLExecutionServiceBindValueTest {
     @DisplayName("A write timestamp too large for microseconds in a long is rejected rather than wrapped")
     void testWriteTimestampOutOfRangeIsRejected() {
         assertThrows(IllegalArgumentException.class, () -> CassandraCQLExecutionService.toEpochMicros(Long.MAX_VALUE));
+    }
+
+    @Test
+    @DisplayName("A decimal with a huge exponent is rejected, or rounded to the epoch, at once rather than after working out every digit")
+    void testHugeExponentIsHandledQuickly() {
+        final BigDecimal huge = new BigDecimal("1e100000000");
+        assertTimeoutPreemptively(Duration.ofSeconds(1), () -> {
+            assertThrows(IllegalArgumentException.class, () -> CassandraCQLExecutionService.toInstant(huge));
+            final IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> CassandraCQLExecutionService.toEpochMicros(huge));
+            assertEquals("A write timestamp cannot be derived: the value is out of range for timestamp", e.getMessage());
+            assertEquals(Instant.EPOCH, CassandraCQLExecutionService.toInstant(new BigDecimal("1e-100000000")));
+        });
     }
 }

@@ -33,7 +33,9 @@ possible, with the following notable behaviors:
   compatible-but-non-exact value (for example a numeric `String`, or an `INT` field for a `BIGINT` column) via
   custom codecs registered by the connection service, not just an exact Java type match. A value is never
   changed to fit: a number too large for an integer type, or with a fraction (`3.7` for an `INT`), is rejected
-  and the FlowFile routed to `failure`, while a whole value such as `42.0` is accepted. `FLOAT` and `DOUBLE`
+  and the FlowFile routed to `failure`, while a whole value such as `42.0` is accepted, as a number or as text.
+  Text for an integer type is read the same way as a number, so `" 42 "` and `"42.0"` are accepted and
+  `"3.7"` is rejected. `FLOAT` and `DOUBLE`
   round to the nearest value they hold, but reject a finite number too large for them rather than storing
   Infinity.
 * `VARINT` is the natural fit for a record's `BIGINT` field (arbitrary-precision integer).

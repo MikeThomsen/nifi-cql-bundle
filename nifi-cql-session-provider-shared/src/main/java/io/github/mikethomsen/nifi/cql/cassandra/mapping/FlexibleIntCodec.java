@@ -69,13 +69,15 @@ public class FlexibleIntCodec implements TypeCodec<Object> {
     }
 
     /**
-     * A number is converted by {@link ExactNumbers}, which rejects one that does not fit a int or has a fraction
-     * instead of narrowing it. Text and anything else go through NiFi's {@code DataTypeUtils}, which already
-     * parses text exactly.
+     * A number, or text read as one, is converted by {@link ExactNumbers}, which rejects a value that does not fit
+     * an int or has a fraction instead of narrowing it, and accepts whole-number text such as {@code "42.0"}.
+     * Anything else goes through NiFi's {@code DataTypeUtils}.
      */
     private Integer convert(final Object value) {
-        return value instanceof Number number
-                ? ExactNumbers.toInt(number, "int")
-                : DataTypeUtils.toInteger(value, getCqlType().toString());
+        return switch (value) {
+            case Number number -> ExactNumbers.toInt(number, "int");
+            case String text -> ExactNumbers.toInt(ExactNumbers.parse(text), "int");
+            default -> DataTypeUtils.toInteger(value, getCqlType().toString());
+        };
     }
 }

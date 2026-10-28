@@ -26,10 +26,18 @@ import static io.github.mikethomsen.nifi.cql.cassandra.mapping.RejectedValueExce
 /**
  * Number conversions for binding that never change a value silently. Java's own narrowing, which NiFi's
  * {@code DataTypeUtils} uses, keeps the low bits of an integer and drops the fraction of a decimal, so 40000
- * becomes -25536 in a smallint and 3.7 becomes 3 in an int. These reject such a value instead, naming the CQL
- * type it was meant for.
+ * becomes -25536 in a smallint and 3.7 becomes 3 in an int. These reject such a value instead.
+ *
+ * <p>A rejection's message gives only the reason, such as "the value is out of range for smallint"; the caller
+ * puts the field or bind marker and its column in front of it.
  */
 public final class ExactNumbers {
+
+    /**
+     * The longest text read as a number. A whole number that fits a long is far shorter, even with a fraction of
+     * zeros, and parsing a longer text costs more than it can be worth.
+     */
+    private static final int MAX_TEXT_LENGTH = 100;
 
     private ExactNumbers() {
     }
@@ -41,8 +49,25 @@ public final class ExactNumbers {
             case Short number -> number;
             case Integer number -> number;
             case Long number -> number;
-            default -> wholeNumber(toBigDecimal(value, cqlType), value, cqlType);
+            default -> wholeNumber(toBigDecimal(value), value, cqlType);
         };
+    }
+
+    /**
+     * A number from text, read as a decimal so that whole-number text such as {@code "42.0"} or {@code " 42 "} passes
+     * the same checks as the number would. Pass the result to {@link #toLong} and the others.
+     */
+    public static BigDecimal parse(final String text) {
+        final String trimmed = text.trim();
+        if (trimmed.length() > MAX_TEXT_LENGTH) {
+            throw new RejectedValueException(String.format(
+                    "the value is too long to be a number: %d characters", trimmed.length()), null);
+        }
+        try {
+            return new BigDecimal(trimmed);
+        } catch (final NumberFormatException e) {
+            throw notANumber(text, e);
+        }
     }
 
     public static int toInt(final Number value, final String cqlType) {
@@ -91,7 +116,17 @@ public final class ExactNumbers {
      * millisecond is dropped, since a CQL timestamp cannot hold one; a value that does not fit in a long is rejected.
      */
     public static long toEpochMillis(final Number value) {
-        final BigDecimal decimal = toBigDecimal(value, "timestamp");
+        final BigDecimal decimal = toBigDecimal(value);
+        // Digits before the decimal point, checked first: rounding works out every digit, so for an exponent such as
+        // 1e100000000 it would take minutes and gigabytes before the range check could fail. As a long, since a
+        // scale near Integer.MIN_VALUE would overflow an int.
+        final long integerDigits = (long) decimal.precision() - decimal.scale();
+        if (integerDigits <= 0) {
+            return 0;
+        }
+        if (integerDigits > 19) {
+            throw outOfRange(value, "timestamp");
+        }
         try {
             return decimal.setScale(0, RoundingMode.DOWN).longValueExact();
         } catch (final ArithmeticException e) {
@@ -99,19 +134,18 @@ public final class ExactNumbers {
         }
     }
 
-    private static BigDecimal toBigDecimal(final Number value, final String cqlType) {
+    private static BigDecimal toBigDecimal(final Number value) {
         return switch (value) {
             case BigDecimal decimal -> decimal;
             case BigInteger integer -> new BigDecimal(integer);
-            case Double number when !Double.isFinite(number) -> throw notFinite(value, cqlType);
-            case Float number when !Float.isFinite(number) -> throw notFinite(value, cqlType);
+            case Double number when !Double.isFinite(number) -> throw notFinite(value);
+            case Float number when !Float.isFinite(number) -> throw notFinite(value);
             // Through the shortest decimal text that round-trips, so 42.0 is whole and 0.1 is exactly 0.1.
             default -> {
                 try {
                     yield new BigDecimal(value.toString());
                 } catch (final NumberFormatException e) {
-                    throw new RejectedValueException(String.format(
-                            "Value%s cannot be bound to a %s column: it is not a number", shown(value), cqlType), e);
+                    throw notANumber(value, e);
                 }
             }
         };
@@ -122,8 +156,7 @@ public final class ExactNumbers {
             return decimal.longValueExact();
         } catch (final ArithmeticException e) {
             if (decimal.stripTrailingZeros().scale() > 0) {
-                throw new RejectedValueException(String.format(
-                        "Value%s cannot be bound to a %s column: it is not a whole number", shown(value), cqlType), null);
+                throw new RejectedValueException(String.format("the value%s is not a whole number", shown(value)), null);
             }
             throw outOfRange(value, cqlType);
         }
@@ -146,12 +179,14 @@ public final class ExactNumbers {
     }
 
     private static RejectedValueException outOfRange(final Object value, final String cqlType) {
-        return new RejectedValueException(String.format(
-                "Value%s cannot be bound to a %s column: it is out of range for %s", shown(value), cqlType, cqlType), null);
+        return new RejectedValueException(String.format("the value%s is out of range for %s", shown(value), cqlType), null);
     }
 
-    private static RejectedValueException notFinite(final Object value, final String cqlType) {
-        return new RejectedValueException(String.format(
-                "Value%s cannot be bound to a %s column: it is not a finite number", shown(value), cqlType), null);
+    private static RejectedValueException notFinite(final Object value) {
+        return new RejectedValueException(String.format("the value%s is not a finite number", shown(value)), null);
+    }
+
+    private static RejectedValueException notANumber(final Object value, final NumberFormatException e) {
+        return new RejectedValueException(String.format("the value%s is not a number", shown(value)), e);
     }
 }

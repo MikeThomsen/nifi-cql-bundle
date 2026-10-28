@@ -247,6 +247,7 @@ public class CassandraCQLExecutionServiceWritePathTest {
                 arguments("decimal from text", "1.25", DataTypes.DECIMAL, new BigDecimal("1.25")),
                 arguments("decimal from a double, by its shortest text", 1.1d, DataTypes.DECIMAL, new BigDecimal("1.1")),
                 arguments("varint from a long", 5L, DataTypes.VARINT, BigInteger.valueOf(5)),
+                arguments("counter from whole-number text with a decimal point", " 42.0 ", DataTypes.COUNTER, 42L),
                 arguments("inet from IPv4 text", "127.0.0.1", DataTypes.INET, InetAddress.getByAddress(new byte[] {127, 0, 0, 1})),
                 arguments("list from Object[]", new Object[] {"a", "b"}, DataTypes.listOf(DataTypes.TEXT), List.of("a", "b")),
                 arguments("list from a Set", new LinkedHashSet<>(List.of("a", "b")), DataTypes.listOf(DataTypes.TEXT), List.of("a", "b")),
@@ -264,9 +265,9 @@ public class CassandraCQLExecutionServiceWritePathTest {
     @MethodSource("rejectedValues")
     @DisplayName("A value that cannot be converted is rejected without the value in the message or its cause, since value logging is off")
     public void testRejectsUnconvertibleValue(final Object value, final DataType cqlType) {
-        final IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> convertForCqlType(value, cqlType));
+        final IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> convertForBind(value, cqlType));
 
-        assertTrue(exception.getMessage().contains(cqlType.asCql(false, true)), exception.getMessage());
+        assertTrue(exception.getMessage().startsWith("Field 'f' cannot be bound to its " + cqlType.asCql(false, true) + " column: "), exception.getMessage());
         assertFalse(exception.getMessage().contains(value.toString()), exception.getMessage());
         assertNull(exception.getCause());
     }
@@ -287,7 +288,17 @@ public class CassandraCQLExecutionServiceWritePathTest {
     static Stream<Arguments> rejectedValues() {
         return Stream.of(arguments("localhost", DataTypes.INET), arguments(1.5d, DataTypes.VARINT), arguments("1 week", DataTypes.DURATION),
                 // Neither may be narrowed: 300 is not a byte, and the BigInteger does not fit the long a timestamp is.
-                arguments(new Object[] {1, 300}, DataTypes.BLOB), arguments(new BigInteger("123456789012345678901234567890"), DataTypes.TIMESTAMP));
+                arguments(new Object[] {1, 300}, DataTypes.BLOB), arguments(new BigInteger("123456789012345678901234567890"), DataTypes.TIMESTAMP),
+                arguments("42.5", DataTypes.COUNTER));
+    }
+
+    @Test
+    @DisplayName("A rejection names the field and its column once, then gives the reason")
+    public void testRejectionNamesTheColumnOnce() {
+        final IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
+                () -> convertForBind(new BigInteger("123456789012345678901234567890"), DataTypes.TIMESTAMP));
+
+        assertEquals("Field 'f' cannot be bound to its timestamp column: the value is out of range for timestamp", exception.getMessage());
     }
 
     /**
@@ -297,19 +308,27 @@ public class CassandraCQLExecutionServiceWritePathTest {
      * is re-thrown as-is so a test can assert on it; anything else fails the test naming the real cause.
      */
     private Object convertForCqlType(final Object value, final DataType cqlType) {
+        return invoke("convertForCqlType", new Class<?>[] {Object.class, DataType.class}, value, cqlType);
+    }
+
+    /** {@code convertForBind}, as a field {@code f} is converted, so a rejection carries the context a user sees. */
+    private Object convertForBind(final Object value, final DataType cqlType) {
+        return invoke("convertForBind", new Class<?>[] {Object.class, DataType.class, String.class}, value, cqlType, "Field 'f'");
+    }
+
+    private Object invoke(final String name, final Class<?>[] parameterTypes, final Object... arguments) {
         try {
-            final Method method = CassandraCQLExecutionService.class
-                    .getDeclaredMethod("convertForCqlType", Object.class, DataType.class);
+            final Method method = CassandraCQLExecutionService.class.getDeclaredMethod(name, parameterTypes);
             method.setAccessible(true);
-            return method.invoke(service, value, cqlType);
+            return method.invoke(service, arguments);
         } catch (final InvocationTargetException e) {
             final Throwable cause = e.getCause();
             if (cause instanceof RuntimeException runtimeException) {
                 throw runtimeException;
             }
-            return fail("convertForCqlType threw " + cause.getClass().getName() + ": " + cause.getMessage(), cause);
+            return fail(name + " threw " + cause.getClass().getName() + ": " + cause.getMessage(), cause);
         } catch (final ReflectiveOperationException e) {
-            return fail("could not invoke convertForCqlType", e);
+            return fail("could not invoke " + name, e);
         }
     }
 

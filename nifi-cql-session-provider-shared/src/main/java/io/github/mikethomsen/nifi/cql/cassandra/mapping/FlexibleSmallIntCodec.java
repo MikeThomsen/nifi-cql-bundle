@@ -69,13 +69,15 @@ public class FlexibleSmallIntCodec implements TypeCodec<Object> {
     }
 
     /**
-     * A number is converted by {@link ExactNumbers}, which rejects one that does not fit a smallint or has a fraction
-     * instead of narrowing it. Text and anything else go through NiFi's {@code DataTypeUtils}, which already
-     * parses text exactly.
+     * A number, or text read as one, is converted by {@link ExactNumbers}, which rejects a value that does not fit
+     * a smallint or has a fraction instead of narrowing it, and accepts whole-number text such as {@code "42.0"}.
+     * Anything else goes through NiFi's {@code DataTypeUtils}.
      */
     private Short convert(final Object value) {
-        return value instanceof Number number
-                ? ExactNumbers.toShort(number, "smallint")
-                : DataTypeUtils.toShort(value, getCqlType().toString());
+        return switch (value) {
+            case Number number -> ExactNumbers.toShort(number, "smallint");
+            case String text -> ExactNumbers.toShort(ExactNumbers.parse(text), "smallint");
+            default -> DataTypeUtils.toShort(value, getCqlType().toString());
+        };
     }
 }
