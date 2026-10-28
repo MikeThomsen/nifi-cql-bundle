@@ -52,10 +52,15 @@
             <artifactId>nifi-cql-session-provider-shared</artifactId>
         </dependency>
 
-        <!-- The concrete driver for nifi-cql-session-provider-shared's provided-scope dependency. -->
+        <!-- The concrete driver for nifi-cql-session-provider-shared's provided-scope dependencies. -->
         <dependency>
             <groupId>org.apache.cassandra</groupId>
             <artifactId>java-driver-core</artifactId>
+            <version>${driver.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.cassandra</groupId>
+            <artifactId>java-driver-query-builder</artifactId>
             <version>${driver.version}</version>
         </dependency>
 

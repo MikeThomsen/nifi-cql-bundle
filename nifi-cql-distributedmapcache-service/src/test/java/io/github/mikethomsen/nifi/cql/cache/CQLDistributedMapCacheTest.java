@@ -16,9 +16,9 @@
  */
 package io.github.mikethomsen.nifi.cql.cache;
 
+import io.github.mikethomsen.nifi.cql.api.exception.QueryFailureException;
 import org.apache.nifi.distributed.cache.client.Deserializer;
 import org.apache.nifi.distributed.cache.client.Serializer;
-import org.apache.nifi.distributed.cache.client.exception.SerializationException;
 import org.apache.nifi.processor.AbstractProcessor;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.ProcessSession;
@@ -39,6 +39,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -273,9 +274,19 @@ class CQLDistributedMapCacheTest {
         runner.setProperty(cache, CQLDistributedMapCache.MAX_VALUE_SIZE, "4 B");
         runner.enableControllerService(cache);
 
-        assertThrows(SerializationException.class, () -> put("k", "far too long"));
+        assertThrows(IOException.class, () -> put("k", "far too long"));
         assertTrue(cluster.executedStatements().isEmpty(),
                 "nothing should reach the cluster once the value is known to be oversized");
+    }
+
+    @Test
+    @DisplayName("A cluster or statement failure is reported as the IOException the client contract declares, so callers can route to failure")
+    void testExecutionFailureIsReportedAsIOException() {
+        final RuntimeException[] failures = {new QueryFailureException(), new IllegalArgumentException("unconfigured table cache")};
+        for (final RuntimeException failure : failures) {
+            cluster.failWith(failure);
+            assertSame(failure, assertThrows(IOException.class, () -> get("k")).getCause());
+        }
     }
 
     @Test

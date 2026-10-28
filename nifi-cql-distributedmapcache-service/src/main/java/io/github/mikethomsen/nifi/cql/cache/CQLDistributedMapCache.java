@@ -28,7 +28,6 @@ import org.apache.nifi.controller.ConfigurationContext;
 import org.apache.nifi.distributed.cache.client.Deserializer;
 import org.apache.nifi.distributed.cache.client.DistributedMapCacheClient;
 import org.apache.nifi.distributed.cache.client.Serializer;
-import org.apache.nifi.distributed.cache.client.exception.SerializationException;
 import org.apache.nifi.expression.ExpressionLanguageScope;
 import org.apache.nifi.processor.util.StandardValidators;
 import io.github.mikethomsen.nifi.cql.api.lookup.CqlRow;
@@ -319,8 +318,17 @@ public class CQLDistributedMapCache extends AbstractControllerService implements
 
     // ---- Helpers -------------------------------------------------------------------------------------
 
-    private CqlStatementResult execute(final String cql, final ByteBuffer... parameters) {
-        return executionService.execute(cql, List.of((Object[]) parameters), QueryOverrides.NONE);
+    /**
+     * Runs one statement, reporting any failure as the {@link IOException} the client contract declares. Callers
+     * such as DetectDuplicate catch only that, so an unchecked error would roll their session back and retry the
+     * FlowFile forever, even for a problem no retry can fix, such as a missing table.
+     */
+    private CqlStatementResult execute(final String cql, final ByteBuffer... parameters) throws IOException {
+        try {
+            return executionService.execute(cql, List.of((Object[]) parameters), QueryOverrides.NONE);
+        } catch (final RuntimeException e) {
+            throw new IOException("CQL statement failed: " + cql, e);
+        }
     }
 
     private <K> ByteBuffer serializeKey(final K key, final Serializer<K> keySerializer) throws IOException {
@@ -331,7 +339,7 @@ public class CQLDistributedMapCache extends AbstractControllerService implements
         final byte[] serialized = serialize(value, valueSerializer);
 
         if (serialized.length > maxValueSizeBytes) {
-            throw new SerializationException(String.format(
+            throw new IOException(String.format(
                     "Value serializes to %d bytes, over the configured Maximum Value Size of %d",
                     serialized.length, maxValueSizeBytes));
         }

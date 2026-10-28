@@ -40,8 +40,10 @@ import org.apache.nifi.processor.Relationship;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.processor.util.StandardValidators;
 import org.apache.nifi.serialization.RecordSetWriterFactory;
+import io.github.mikethomsen.nifi.cql.api.constants.CqlStatementType;
 import io.github.mikethomsen.nifi.cql.api.exception.QueryFailureException;
 import io.github.mikethomsen.nifi.cql.api.service.CQLExecutionService;
+import io.github.mikethomsen.nifi.cql.api.service.CqlStatements;
 import io.github.mikethomsen.nifi.cql.api.service.QueryOverrides;
 import org.apache.nifi.util.StopWatch;
 
@@ -147,7 +149,8 @@ public class ExecuteCQLQueryRecord extends AbstractCQLProcessor {
                     CQL select query. Values that come from outside the flow's own configuration - a FlowFile \
                     attribute, for example - should be supplied as '?' bind markers with matching cql.arg.<position> \
                     dynamic properties rather than interpolated into this query text, since anything interpolated here \
-                    is parsed as CQL.""")
+                    is parsed as CQL. Only a SELECT is run: any other statement fails validation, or routes the FlowFile \
+                    to failure when the query comes from Expression Language.""")
             .required(true)
             .addValidator(StandardValidators.NON_EMPTY_VALIDATOR)
             .expressionLanguageSupported(ExpressionLanguageScope.FLOWFILE_ATTRIBUTES)
@@ -281,7 +284,24 @@ public class ExecuteCQLQueryRecord extends AbstractCQLProcessor {
             }
         }
 
+        final PropertyValue query = context.getProperty(CQL_SELECT_QUERY);
+        if (query.isSet() && !context.isExpressionLanguagePresent(query.getValue())) {
+            final String problem = notSelectProblem(query.getValue());
+            if (problem != null) {
+                return List.of(new ValidationResult.Builder().subject(CQL_SELECT_QUERY.getDisplayName()).valid(false).explanation(problem).build());
+            }
+        }
+
         return List.of();
+    }
+
+    /** @return why {@code cql} is not a SELECT, or {@code null} if it is one */
+    private static String notSelectProblem(final String cql) {
+        final CqlStatementType type = CqlStatements.typeOf(cql);
+        if (type == CqlStatementType.SELECT) {
+            return null;
+        }
+        return String.format("the statement is %s but this processor only runs a SELECT", type == null ? "not a SELECT, INSERT, UPDATE or DELETE" : type);
     }
 
     private static List<Integer> getParameterPositions(final Collection<PropertyDescriptor> descriptors) {
@@ -367,6 +387,12 @@ public class ExecuteCQLQueryRecord extends AbstractCQLProcessor {
 
             final PropertyValue queryTimeoutProperty = context.getProperty(QUERY_TIMEOUT).evaluateAttributeExpressions(fileToProcess);
             final Duration queryTimeoutOverride = queryTimeoutProperty.isSet() ? queryTimeoutProperty.asDuration() : null;
+
+            // Checked per FlowFile as well as at validation, since a query from Expression Language is only known here.
+            final String notSelect = notSelectProblem(selectQuery);
+            if (notSelect != null) {
+                throw new IllegalArgumentException(notSelect);
+            }
 
             stopWatch.start();
 

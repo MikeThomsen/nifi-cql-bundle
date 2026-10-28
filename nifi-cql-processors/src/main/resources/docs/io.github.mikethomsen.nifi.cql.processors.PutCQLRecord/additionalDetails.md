@@ -46,6 +46,9 @@ possible, with the following notable behaviors:
 * `LIST`/`SET` accept a record `ARRAY`, or any collection; `MAP` accepts a record `MAP`. Elements are
   converted recursively using these same rules, so a `list<timeuuid>` or `set<uuid>` is subject to the same
   requirements as a scalar column of that type.
+* `DURATION` accepts CQL duration text such as `1h30m` or `PT1H30M`, or the duration value a query returns.
+* A `TUPLE` column accepts a record `ARRAY` with one element per component, converted by these same rules, or
+  the tuple's CQL literal text, such as `(7,'x')`, which is the form a query returns it in.
 * A Cassandra User Defined Type (UDT) column accepts either a nested `RECORD` or a raw `Map`, with fields
   converted recursively the same way, including UDTs nested inside UDTs, or inside a `LIST`/`SET`/`MAP`.
 
@@ -99,7 +102,8 @@ a rollback can also be triggered by a failure that has nothing to do with Run Du
 * _Time To Live_ overrides the connection service's own default TTL for `INSERT` and `SET`-method `UPDATE`
   statements. Ignored for `INCREMENT`/`DECREMENT`, since Cassandra/ScyllaDB do not support a TTL on counter
   columns. A TTL must be at least 1 second: CQL counts a TTL in whole seconds and reads 0 as no TTL, so a
-  shorter value would mean "never expire". A shorter value fails validation, or routes the FlowFile to
+  shorter value would mean "never expire". A TTL can also be at most 20 years (630,720,000 seconds), the
+  most Cassandra and ScyllaDB accept. A value outside that range fails validation, or routes the FlowFile to
   `failure` when it comes from Expression Language.
 * _Timestamp Field_ names a field in each record whose value supplies the CQL write timestamp for that
   record's statement, instead of the time the statement executes. This makes retries/reprocessing safe:
@@ -147,7 +151,8 @@ records to different partitions.
 
 An override only applies to writes against the keyspace-qualified table named in the property; the same
 column name in a different keyspace or table is unaffected, and an unrelated dynamic property never
-accidentally applies to the wrong table.
+accidentally applies to the wrong table. All three segments are matched the way CQL matches unquoted names,
+whatever their case, so `Analytics.Customer_Events.Customer_ID` applies to `analytics.customer_events`.
 
 ### Example
 

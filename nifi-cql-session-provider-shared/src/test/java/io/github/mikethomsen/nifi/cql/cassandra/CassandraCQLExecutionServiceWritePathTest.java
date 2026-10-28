@@ -29,6 +29,7 @@ import org.apache.nifi.serialization.record.Record;
 import org.apache.nifi.serialization.record.RecordField;
 import org.apache.nifi.serialization.record.RecordFieldType;
 import org.apache.nifi.serialization.record.RecordSchema;
+import org.apache.nifi.serialization.record.util.IllegalTypeConversionException;
 import io.github.mikethomsen.nifi.cql.api.metadata.PrimaryKeyIdentifier;
 import io.github.mikethomsen.nifi.cql.api.metadata.QualifiedTableName;
 import org.junit.jupiter.api.DisplayName;
@@ -54,7 +55,9 @@ import java.util.UUID;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -216,19 +219,19 @@ public class CassandraCQLExecutionServiceWritePathTest {
     /**
      * A {@code timeuuid} column only accepts a genuine version-1 UUID. The driver's own codec would reject a
      * v4 with a {@code CodecNotFoundException} that reads like a configuration fault, so {@code convertForCqlType}
-     * checks first and fails with the offending value named. Lifted out of {@code AbstractCqlRecordFieldTypeIT},
+     * checks first and fails with a message naming the version. Lifted out of {@code AbstractCqlRecordFieldTypeIT},
      * where a container added nothing to this check.
      */
     @Test
-    @DisplayName("A non-version-1 UUID targeting a timeuuid column is rejected, with the offending value in the message")
+    @DisplayName("A non-version-1 UUID targeting a timeuuid column is rejected, naming its version but not the value")
     public void testTimeUuidRejectsNonVersion1Uuid() {
         final UUID v4 = UUID.randomUUID();
 
         final IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
                 () -> convertForCqlType(v4, DataTypes.TIMEUUID));
 
-        assertTrue(exception.getMessage().contains(v4.toString()),
-                () -> "expected the message to name the offending value, was: " + exception.getMessage());
+        assertTrue(exception.getMessage().contains("version 4"), exception.getMessage());
+        assertFalse(exception.getMessage().contains(v4.toString()), exception.getMessage());
     }
 
     /**
@@ -259,16 +262,30 @@ public class CassandraCQLExecutionServiceWritePathTest {
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("rejectedValues")
-    @DisplayName("A value that cannot be converted is rejected with the value in the message")
+    @DisplayName("A value that cannot be converted is rejected without the value in the message or its cause, since value logging is off")
     public void testRejectsUnconvertibleValue(final Object value, final DataType cqlType) {
         final IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () -> convertForCqlType(value, cqlType));
 
-        assertTrue(exception.getMessage().contains(value.toString()), exception.getMessage());
+        assertTrue(exception.getMessage().contains(cqlType.asCql(false, true)), exception.getMessage());
+        assertFalse(exception.getMessage().contains(value.toString()), exception.getMessage());
+        assertNull(exception.getCause());
+    }
+
+    @Test
+    @DisplayName("A NiFi or driver conversion error, which can quote the value, is reduced to its type when value logging is off")
+    public void testThirdPartyConversionErrorHidesTheValue() {
+        final RuntimeException quoting = new IllegalTypeConversionException("Cannot convert value [40000] of type class java.lang.String to Short");
+
+        final IllegalArgumentException exception = CassandraCQLExecutionService.conversionFailure("Field 'n' cannot be bound to its smallint column", quoting);
+
+        assertTrue(exception.getMessage().startsWith("Field 'n' cannot be bound to its smallint column: IllegalTypeConversionException"), exception.getMessage());
+        assertFalse(exception.getMessage().contains("40000"), exception.getMessage());
+        assertNull(exception.getCause());
     }
 
     /** A host name is rejected rather than looked up; a fraction has no varint. */
     static Stream<Arguments> rejectedValues() {
-        return Stream.of(arguments("localhost", DataTypes.INET), arguments(1.5d, DataTypes.VARINT));
+        return Stream.of(arguments("localhost", DataTypes.INET), arguments(1.5d, DataTypes.VARINT), arguments("1 week", DataTypes.DURATION));
     }
 
     /**
@@ -297,20 +314,20 @@ public class CassandraCQLExecutionServiceWritePathTest {
     // ------------------------------------------------------------------ override field-name matching
 
     /**
-     * The override lookup's field-name match must be case-insensitive, via {@code CqlIdentifier} normalization:
-     * a dynamic property name naturally carries whatever case it was typed with (e.g. {@code ks.tbl.MyField}),
-     * while the column it targets is lowercase, unquoted CQL (e.g. {@code myfield}).
+     * The override lookup must match keyspace, table and field case-insensitively, via {@code CqlIdentifier}
+     * normalization: a dynamic property name naturally carries whatever case it was typed with (e.g.
+     * {@code KS.T.MyField}), while what it targets is lowercase, unquoted CQL (e.g. {@code ks.t.myfield}).
      */
     @Test
-    @DisplayName("A primary key override declared with a mixed-case field name matches the lowercase column")
-    public void testOverrideMatchIsCaseInsensitiveOnFieldName() {
+    @DisplayName("A primary key override declared with mixed-case names matches the lowercase keyspace, table and column")
+    public void testOverrideMatchIsCaseInsensitive() {
         final RecordPath path = RecordPath.compile("/source");
         final Map<PrimaryKeyIdentifier, RecordPath> overrides =
-                Map.of(new PrimaryKeyIdentifier("ks", "t", "MyField"), path);
+                Map.of(new PrimaryKeyIdentifier("KS", "T", "MyField"), path);
 
         final RecordPath matched = getRecordPathOverride(new QualifiedTableName("ks", "t"), "myfield", overrides);
 
-        assertNotNull(matched, "expected the mixed-case override to match the lowercase column name");
+        assertNotNull(matched, "expected the mixed-case override to match the lowercase keyspace, table and column");
         assertEquals(path, matched);
     }
 

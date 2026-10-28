@@ -230,9 +230,9 @@ public class PutCQLRecordTest {
     }
 
     @ParameterizedTest(name = "{0}")
-    @DisplayName("A Time To Live under one second is invalid, since CQL would read it as no expiry at all")
-    @CsvSource({"500 ms,false", "0 sec,false", "1 sec,true", "1500 ms,true"})
-    void testTtlMustBeAtLeastOneSecond(final String ttl, final boolean valid) {
+    @DisplayName("A Time To Live under one second is invalid, since CQL would read it as no expiry at all, and so is one over the cluster's 20-year maximum")
+    @CsvSource({"500 ms,false", "0 sec,false", "1 sec,true", "1500 ms,true", "7300 days,true", "7301 days,false"})
+    void testTtlMustBeWithinCqlRange(final String ttl, final boolean valid) {
         runner.setProperty(PutCQLRecord.TTL, ttl);
 
         if (valid) {
@@ -490,6 +490,8 @@ public class PutCQLRecordTest {
                 arguments("several overrides on insert", true, false,
                         Map.of("my_keyspace.message.id", "/sender", "my_keyspace.message.ts", "/message"),
                         Map.of("id", "/sender", "ts", "/message")),
+                arguments("keyspace and table match whatever their case", true, false,
+                        Map.of("My_Keyspace.MESSAGE.id", "/sender"), Map.of("id", "/sender")),
                 arguments("an override for another table is excluded", true, false,
                         Map.of("my_keyspace.other_table.id", "/sender"), Map.of()),
                 arguments("an unqualified Table matches no override", false, false,
@@ -528,8 +530,8 @@ public class PutCQLRecordTest {
 
         final Map<String, String> actual = new HashMap<>();
         captor.getValue().forEach((key, path) -> {
-            assertEquals("my_keyspace", key.keyspace());
-            assertEquals("message", key.tableName());
+            assertTrue("my_keyspace".equalsIgnoreCase(key.keyspace()), key.keyspace());
+            assertTrue("message".equalsIgnoreCase(key.tableName()), key.tableName());
             actual.put(key.fieldName(), path.getPath());
         });
         assertEquals(expected, actual);

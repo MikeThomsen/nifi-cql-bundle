@@ -327,6 +327,22 @@ public class ExecuteCQLQueryRecordTest {
         testRunner.assertNotValid();
     }
 
+    @Test
+    @DisplayName("Verify that a statement other than a SELECT fails validation, or routes to failure when it comes from an attribute")
+    public void testNonSelectStatementIsRejected() throws Exception {
+        MockCQLQueryExecutionService service = configureServices();
+        testRunner.setProperty(ExecuteCQLQueryRecord.CQL_SELECT_QUERY, "TRUNCATE cql_table");
+        testRunner.assertNotValid();
+
+        testRunner.setProperty(ExecuteCQLQueryRecord.CQL_SELECT_QUERY, "${query}");
+        testRunner.assertValid();
+        testRunner.enqueue("", Map.of("query", "INSERT INTO cql_table (id) VALUES (1)"));
+        testRunner.run();
+
+        testRunner.assertAllFlowFilesTransferred(ExecuteCQLQueryRecord.REL_FAILURE, 1);
+        assertNull(service.getLastCql());
+    }
+
     @ParameterizedTest(name = "{0}")
     @DisplayName("Verify that a negative fetch size or row limit fails validation")
     @CsvSource({"Fetch Size", "Max Rows Per Flow File"})

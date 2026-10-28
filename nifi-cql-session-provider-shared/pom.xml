@@ -55,21 +55,13 @@
             <scope>provided</scope>
         </dependency>
 
-        <!-- Not forked by ScyllaDB, so compile scope is fine; its transitive driver-core/guava-shaded are excluded so they don't leak in behind the provided scope above. -->
+        <!-- Provided for the same reason: ScyllaDB publishes its own query builder, released with its driver core,
+             so each leaf supplies the one that matches its core. -->
         <dependency>
             <groupId>org.apache.cassandra</groupId>
             <artifactId>java-driver-query-builder</artifactId>
             <version>${driver.version}</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.apache.cassandra</groupId>
-                    <artifactId>java-driver-core</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>org.apache.cassandra</groupId>
-                    <artifactId>java-driver-guava-shaded</artifactId>
-                </exclusion>
-            </exclusions>
+            <scope>provided</scope>
         </dependency>
 
         <dependency>

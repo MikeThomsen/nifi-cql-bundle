@@ -18,6 +18,7 @@ package io.github.mikethomsen.nifi.cql.it;
 
 import com.datastax.oss.driver.api.core.CqlSession;
 import com.datastax.oss.driver.api.core.cql.Row;
+import com.datastax.oss.driver.api.core.data.CqlDuration;
 import org.apache.nifi.serialization.SimpleRecordSchema;
 import org.apache.nifi.serialization.record.MapRecord;
 import org.apache.nifi.serialization.record.RecordField;
@@ -165,6 +166,46 @@ public abstract class AbstractCqlCrudIT {
 
         sessionProvider.update(table, record, Map.of(), updateKeys, UpdateMethod.DECREMENT, WriteOverrides.NONE);
         assertEquals(1, counterValue("abcdef"));
+    }
+
+    @Test
+    @DisplayName("A counter amount given as text, the form every ExecuteCQL parameter takes, is bound as a number")
+    void testCounterIncrementFromTextParameter() {
+        sessionProvider.execute("update testspace.counter_test set increment_field = increment_field + ? where column_a = ?",
+                List.of("5", "counter-from-text"), QueryOverrides.NONE);
+
+        assertEquals(5, counterValue("counter-from-text"));
+    }
+
+    @Test
+    @DisplayName("Duration and tuple columns are written from text, from a tuple's elements, and from the record a query read them into")
+    void testDurationAndTupleColumnsAreWritable() {
+        final QualifiedTableName table = new QualifiedTableName(connectionInfo.keyspace(), "duration_tuple");
+        CqlDdl.executeWithRetry(session, "create table if not exists " + table.keyspace() + ".duration_tuple (k text primary key, d duration, t tuple<int, text>)");
+
+        final RecordSchema textSchema = new SimpleRecordSchema(List.of(
+                new RecordField("k", RecordFieldType.STRING.getDataType()),
+                new RecordField("d", RecordFieldType.STRING.getDataType()),
+                new RecordField("t", RecordFieldType.STRING.getDataType())));
+        sessionProvider.insert(table, new MapRecord(textSchema, Map.of("k", "text", "d", "1h30m", "t", "(7,'x')")), Map.of(), WriteOverrides.NONE);
+
+        final RecordSchema arraySchema = new SimpleRecordSchema(List.of(
+                new RecordField("k", RecordFieldType.STRING.getDataType()),
+                new RecordField("d", RecordFieldType.STRING.getDataType()),
+                new RecordField("t", RecordFieldType.ARRAY.getArrayDataType(RecordFieldType.STRING.getDataType()))));
+        sessionProvider.insert(table, new MapRecord(arraySchema, Map.of("k", "array", "d", "PT1H30M", "t", new Object[] {"7", "x"})), Map.of(), WriteOverrides.NONE);
+
+        final CollectingCqlQueryCallback callback = new CollectingCqlQueryCallback();
+        sessionProvider.query("select k, d, t from " + table.keyspace() + ".duration_tuple where k = 'text'", null, callback, QueryOverrides.NONE);
+        final org.apache.nifi.serialization.record.Record read = callback.getRecords().getFirst();
+        sessionProvider.insert(table, new MapRecord(read.getSchema(), Map.of("k", "copy", "d", read.getValue("d"), "t", read.getValue("t"))),
+                Map.of(), WriteOverrides.NONE);
+
+        for (final String key : List.of("text", "array", "copy")) {
+            final Row row = session.execute("select d, t from " + table.keyspace() + ".duration_tuple where k = ?", key).one();
+            assertEquals(CqlDuration.from("1h30m"), row.getCqlDuration("d"), key);
+            assertEquals("(7,'x')", row.getTupleValue("t").getFormattedContents(), key);
+        }
     }
 
     @Test

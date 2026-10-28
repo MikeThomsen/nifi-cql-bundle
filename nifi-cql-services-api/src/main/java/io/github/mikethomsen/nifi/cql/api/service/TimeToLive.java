@@ -26,12 +26,16 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * The rules for a CQL Time To Live, shared by every property that takes one. CQL counts a TTL in whole seconds
- * and treats 0 as no TTL at all, so anything under a second would silently mean "never expire".
+ * and treats 0 as no TTL at all, so anything under a second would silently mean "never expire". Cassandra and
+ * ScyllaDB both reject a TTL above 20 years.
  */
 public final class TimeToLive {
 
+    /** The largest TTL Cassandra and ScyllaDB accept: 20 years of 365 days, in seconds. */
+    public static final long MAX_SECONDS = 630_720_000L;
+
     /**
-     * Validates a time period of at least one second. A value containing Expression Language passes through
+     * Validates a time period of at least one second and at most {@link #MAX_SECONDS}. A value containing Expression Language passes through
      * unvalidated; {@link #toSeconds} checks it once evaluated.
      */
     public static final Validator VALIDATOR = (subject, input, context) -> {
@@ -40,12 +44,15 @@ public final class TimeToLive {
             return timePeriod;
         }
 
-        final boolean atLeastOneSecond = DurationFormat.getPreciseTimeDuration(input, TimeUnit.SECONDS) >= 1;
+        final double seconds = DurationFormat.getPreciseTimeDuration(input, TimeUnit.SECONDS);
+        final String problem = seconds < 1 ? "a Time To Live must be at least 1 second"
+                : seconds > MAX_SECONDS ? "a Time To Live must be at most " + MAX_SECONDS + " seconds (20 years)"
+                : null;
         return new ValidationResult.Builder()
                 .subject(subject)
                 .input(input)
-                .valid(atLeastOneSecond)
-                .explanation(atLeastOneSecond ? null : "a Time To Live must be at least 1 second")
+                .valid(problem == null)
+                .explanation(problem)
                 .build();
     };
 
@@ -54,12 +61,15 @@ public final class TimeToLive {
 
     /**
      * @return {@code ttl} in the whole seconds CQL expects
-     * @throws IllegalArgumentException if it is under one second
+     * @throws IllegalArgumentException if it is under one second or over {@link #MAX_SECONDS}
      */
     public static int toSeconds(final Duration ttl) {
         if (ttl.toSeconds() < 1) {
             throw new IllegalArgumentException("A Time To Live must be at least 1 second, but was " + ttl);
         }
-        return Math.toIntExact(ttl.toSeconds());
+        if (ttl.toSeconds() > MAX_SECONDS) {
+            throw new IllegalArgumentException("A Time To Live must be at most " + MAX_SECONDS + " seconds (20 years), but was " + ttl);
+        }
+        return (int) ttl.toSeconds();
     }
 }
