@@ -50,7 +50,7 @@ public class FlexibleIntCodec implements TypeCodec<Object> {
 
     @Override
     public ByteBuffer encode(Object value, ProtocolVersion protocolVersion) {
-        return value == null ? null : intCodec.encode(DataTypeUtils.toInteger(value, getCqlType().toString()), protocolVersion);
+        return value == null ? null : intCodec.encode(convert(value), protocolVersion);
     }
 
     @Override
@@ -60,11 +60,22 @@ public class FlexibleIntCodec implements TypeCodec<Object> {
 
     @Override
     public String format(Object value) {
-        return value == null ? "NULL" : intCodec.format(DataTypeUtils.toInteger(value, getCqlType().toString()));
+        return value == null ? "NULL" : intCodec.format(convert(value));
     }
 
     @Override
     public Object parse(String value) {
         return intCodec.parse(value);
+    }
+
+    /**
+     * A number is converted by {@link ExactNumbers}, which rejects one that does not fit a int or has a fraction
+     * instead of narrowing it. Text and anything else go through NiFi's {@code DataTypeUtils}, which already
+     * parses text exactly.
+     */
+    private Integer convert(final Object value) {
+        return value instanceof Number number
+                ? ExactNumbers.toInt(number, "int")
+                : DataTypeUtils.toInteger(value, getCqlType().toString());
     }
 }

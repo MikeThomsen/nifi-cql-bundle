@@ -28,14 +28,18 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 /**
@@ -166,12 +170,16 @@ class FlexibleCodecTest {
                 arguments("smallint <- Long", new FlexibleSmallIntCodec(), 42L, smallIntBytes),
                 arguments("smallint <- String", new FlexibleSmallIntCodec(), "42", smallIntBytes),
                 arguments("smallint <- Short beyond byte range", new FlexibleSmallIntCodec(), (short) 300, wideSmallIntBytes),
+                arguments("smallint <- Integer at its maximum", new FlexibleSmallIntCodec(), 32_767,
+                        TypeCodecs.SMALLINT.encode((short) 32_767, VERSION)),
                 arguments("smallint <- String beyond byte range", new FlexibleSmallIntCodec(), "300", wideSmallIntBytes),
 
                 // tinyint
                 arguments("tinyint <- Byte", new FlexibleTinyIntCodec(), (byte) 42, tinyIntBytes),
                 arguments("tinyint <- Integer", new FlexibleTinyIntCodec(), 42, tinyIntBytes),
                 arguments("tinyint <- String", new FlexibleTinyIntCodec(), "42", tinyIntBytes),
+                arguments("tinyint <- Integer at its minimum", new FlexibleTinyIntCodec(), -128,
+                        TypeCodecs.TINYINT.encode((byte) -128, VERSION)),
 
                 // double
                 arguments("double <- Double", new FlexibleDoubleCodec(), 42.5d, doubleBytes),
@@ -240,9 +248,36 @@ class FlexibleCodecTest {
                 arguments("float <- arbitrary Object", new FlexibleFloatCodec(), new Object()),
                 arguments("smallint <- arbitrary Object", new FlexibleSmallIntCodec(), new Object()),
                 arguments("boolean <- arbitrary Object", new FlexibleBooleanCodec(), new Object()),
-                arguments("boolean <- a String that is neither true nor false", new FlexibleBooleanCodec(), "yes"),
-                // Widening is not the same as truncating: a value too large for the column is an error, not a wrap.
-                arguments("int <- a Long too large for an int", new FlexibleIntCodec(), Long.MAX_VALUE));
+                arguments("boolean <- a String that is neither true nor false", new FlexibleBooleanCodec(), "yes"));
+    }
+
+    /**
+     * Widening is not the same as narrowing: a number too large for the column, or with a fraction it cannot hold,
+     * is an error rather than a wrapped or truncated value. Each of these was stored wrong before (B23).
+     */
+    static Stream<Arguments> numericRejections() {
+        return Stream.of(
+                arguments("smallint <- Integer too large", new FlexibleSmallIntCodec(), 40_000),
+                arguments("tinyint <- Integer too large", new FlexibleTinyIntCodec(), 300),
+                arguments("int <- Long too large", new FlexibleIntCodec(), Long.MAX_VALUE),
+                arguments("bigint <- BigInteger too large", new FlexibleBigIntCodec(), new BigInteger("12345678901234567890")),
+                arguments("int <- Double with a fraction", new FlexibleIntCodec(), 3.7d),
+                arguments("bigint <- Double with a fraction", new FlexibleBigIntCodec(), 2.5d),
+                arguments("int <- NaN", new FlexibleIntCodec(), Double.NaN),
+                arguments("counter <- Double with a fraction", new FlexibleCounterCodec(), 1.5d),
+                arguments("float <- Double too large", new FlexibleFloatCodec(), 1e40d),
+                arguments("float <- String too large", new FlexibleFloatCodec(), "1e40"),
+                arguments("double <- BigDecimal too large", new FlexibleDoubleCodec(), new BigDecimal("1e400")));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("numericRejections")
+    @DisplayName("A number that does not fit the column is rejected, naming the column type but not the value")
+    void testNumberThatDoesNotFitIsRejected(final String name, final TypeCodec<?> codec, final Object input) {
+        final RejectedValueException thrown = assertThrows(RejectedValueException.class, () -> encode(codec, input));
+
+        assertTrue(thrown.getMessage().contains(codec.getCqlType().asCql(false, true)), thrown.getMessage());
+        assertFalse(thrown.getMessage().contains(String.valueOf(input)), thrown.getMessage());
     }
 
     @ParameterizedTest(name = "{0}")

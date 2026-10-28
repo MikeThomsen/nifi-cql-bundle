@@ -50,7 +50,7 @@ public class FlexibleDoubleCodec implements TypeCodec<Object> {
 
     @Override
     public ByteBuffer encode(Object value, ProtocolVersion protocolVersion) {
-        return value == null ? null : doubleCodec.encode(DataTypeUtils.toDouble(value, getCqlType().toString()), protocolVersion);
+        return value == null ? null : doubleCodec.encode(convert(value), protocolVersion);
     }
 
     @Override
@@ -60,11 +60,21 @@ public class FlexibleDoubleCodec implements TypeCodec<Object> {
 
     @Override
     public String format(Object value) {
-        return value == null ? "NULL" : doubleCodec.format(DataTypeUtils.toDouble(value, getCqlType().toString()));
+        return value == null ? "NULL" : doubleCodec.format(convert(value));
     }
 
     @Override
     public Object parse(String value) {
         return doubleCodec.parse(value);
+    }
+
+    /**
+     * A number is converted by {@link ExactNumbers}, text and anything else by NiFi's {@code DataTypeUtils}; either
+     * way a finite value too large for a double is rejected rather than stored as Infinity.
+     */
+    private Double convert(final Object value) {
+        return value instanceof Number number
+                ? ExactNumbers.toDouble(number, "double")
+                : ExactNumbers.checkDouble(DataTypeUtils.toDouble(value, getCqlType().toString()), value, "double");
     }
 }
