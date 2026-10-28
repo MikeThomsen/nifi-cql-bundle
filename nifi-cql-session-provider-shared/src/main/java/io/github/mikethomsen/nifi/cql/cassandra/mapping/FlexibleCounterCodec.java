@@ -27,8 +27,8 @@ import com.datastax.oss.driver.api.core.type.reflect.GenericType;
 import java.nio.ByteBuffer;
 
 /**
- * A CQL {@code counter} codec that binds any {@link Number} by narrowing it to a {@code long} and
- * delegating to the built-in {@code bigint} codec, since a counter is stored as a 64-bit integer.
+ * A CQL {@code counter} codec that binds any {@link Number} as the {@code long} a counter is stored as, delegating
+ * to the built-in {@code bigint} codec. A number with a fraction or out of range is rejected, not narrowed.
  */
 public class FlexibleCounterCodec implements TypeCodec<Number> {
 
@@ -49,7 +49,7 @@ public class FlexibleCounterCodec implements TypeCodec<Number> {
         if (value == null) {
             return null;
         }
-        return inner.encode(value.longValue(), protocolVersion);
+        return inner.encode(ExactNumbers.toLong(value, "counter"), protocolVersion);
     }
 
     @Override
@@ -60,7 +60,7 @@ public class FlexibleCounterCodec implements TypeCodec<Number> {
 
     @Override
     public String format(Number value) {
-        return inner.format(value == null ? null : value.longValue());
+        return inner.format(value == null ? null : ExactNumbers.toLong(value, "counter"));
     }
 
     @Override

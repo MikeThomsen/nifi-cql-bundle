@@ -30,8 +30,12 @@ CQL column types are matched against record field values using the driver's own 
 possible, with the following notable behaviors:
 
 * `BOOLEAN`, the integer types (`TINYINT`/`SMALLINT`/`INT`/`BIGINT`/`COUNTER`), `FLOAT`, and `DOUBLE` accept a
-  compatible-but-non-exact value (for example a numeric `String`) via custom codecs registered by the
-  connection service, not just an exact Java type match.
+  compatible-but-non-exact value (for example a numeric `String`, or an `INT` field for a `BIGINT` column) via
+  custom codecs registered by the connection service, not just an exact Java type match. A value is never
+  changed to fit: a number too large for an integer type, or with a fraction (`3.7` for an `INT`), is rejected
+  and the FlowFile routed to `failure`, while a whole value such as `42.0` is accepted. `FLOAT` and `DOUBLE`
+  round to the nearest value they hold, but reject a finite number too large for them rather than storing
+  Infinity.
 * `VARINT` is the natural fit for a record's `BIGINT` field (arbitrary-precision integer).
 * `CHAR` has no dedicated CQL equivalent and is written to a `TEXT`/`VARCHAR` column.
 * `UUID` and `TIMEUUID` both bind from a record's `UUID` field type - see
@@ -39,10 +43,13 @@ possible, with the following notable behaviors:
   imposes.
 * `DATE`/`TIME`/`TIMESTAMP` accept `java.sql.Date`/`java.sql.Time`/`Instant`-family values. `TIMESTAMP` also
   accepts ISO-8601 text such as `2026-08-07T14:30:00Z`, or a number or numeric text of milliseconds since the
-  epoch, so a record whose schema was inferred from text still writes.
+  epoch, so a record whose schema was inferred from text still writes. A fraction of a millisecond is dropped,
+  since a CQL timestamp cannot hold one; a number outside the range of a timestamp is rejected.
 * `DECIMAL` and `VARINT` accept any number or numeric text; `VARINT` rejects one with a fractional part.
 * `INET` accepts an IPv4 or IPv6 address literal as text. A host name is rejected rather than looked up.
-* `BLOB` accepts a record's bytes (`ARRAY` of `BYTE`), as the record readers produce them.
+* `BLOB` accepts a record's bytes (`ARRAY` of `BYTE`), as the record readers produce them, or an array of
+  whole numbers from -128 to 255, so bytes written unsigned (`200`) or signed (`-56`) both work. Any other
+  element is rejected rather than narrowed.
 * `LIST`/`SET` accept a record `ARRAY`, or any collection; `MAP` accepts a record `MAP`. Elements are
   converted recursively using these same rules, so a `list<timeuuid>` or `set<uuid>` is subject to the same
   requirements as a scalar column of that type.

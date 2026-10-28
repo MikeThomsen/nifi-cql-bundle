@@ -50,7 +50,7 @@ public class FlexibleSmallIntCodec implements TypeCodec<Object> {
 
     @Override
     public ByteBuffer encode(Object value, ProtocolVersion protocolVersion) {
-        return value == null ? null : smallIntCodec.encode(DataTypeUtils.toShort(value, getCqlType().toString()), protocolVersion);
+        return value == null ? null : smallIntCodec.encode(convert(value), protocolVersion);
     }
 
     @Override
@@ -60,11 +60,22 @@ public class FlexibleSmallIntCodec implements TypeCodec<Object> {
 
     @Override
     public String format(Object value) {
-        return value == null ? "NULL" : smallIntCodec.format(DataTypeUtils.toShort(value, getCqlType().toString()));
+        return value == null ? "NULL" : smallIntCodec.format(convert(value));
     }
 
     @Override
     public Object parse(String value) {
         return smallIntCodec.parse(value);
+    }
+
+    /**
+     * A number is converted by {@link ExactNumbers}, which rejects one that does not fit a smallint or has a fraction
+     * instead of narrowing it. Text and anything else go through NiFi's {@code DataTypeUtils}, which already
+     * parses text exactly.
+     */
+    private Short convert(final Object value) {
+        return value instanceof Number number
+                ? ExactNumbers.toShort(number, "smallint")
+                : DataTypeUtils.toShort(value, getCqlType().toString());
     }
 }

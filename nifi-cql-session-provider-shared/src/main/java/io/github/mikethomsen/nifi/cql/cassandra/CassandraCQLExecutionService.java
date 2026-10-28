@@ -94,6 +94,7 @@ import org.apache.nifi.serialization.record.type.RecordDataType;
 import org.apache.nifi.serialization.record.util.DataTypeUtils;
 import io.github.mikethomsen.nifi.cql.cassandra.mapping.CassandraUdtSchemaMapper;
 import io.github.mikethomsen.nifi.cql.cassandra.mapping.CharacterCodec;
+import io.github.mikethomsen.nifi.cql.cassandra.mapping.ExactNumbers;
 import io.github.mikethomsen.nifi.cql.cassandra.mapping.FlexibleBigIntCodec;
 import io.github.mikethomsen.nifi.cql.cassandra.mapping.FlexibleBooleanCodec;
 import io.github.mikethomsen.nifi.cql.cassandra.mapping.FlexibleCounterCodec;
@@ -107,6 +108,7 @@ import io.github.mikethomsen.nifi.cql.cassandra.mapping.FlexibleTinyIntCodec;
 import io.github.mikethomsen.nifi.cql.cassandra.mapping.JavaSQLDateCodec;
 import io.github.mikethomsen.nifi.cql.cassandra.mapping.JavaSQLTimeCodec;
 import io.github.mikethomsen.nifi.cql.cassandra.mapping.JavaSQLTimestampCodec;
+import io.github.mikethomsen.nifi.cql.cassandra.mapping.RejectedValueException;
 import io.github.mikethomsen.nifi.cql.api.constants.CqlBatchType;
 import io.github.mikethomsen.nifi.cql.api.constants.CqlStatementType;
 import io.github.mikethomsen.nifi.cql.api.constants.PrimaryKeyFieldType;
@@ -164,6 +166,8 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import javax.net.ssl.SSLContext;
 
+import static io.github.mikethomsen.nifi.cql.cassandra.mapping.RejectedValueException.shown;
+
 @Tags({"cassandra", "cql", "database", "connection", "session", "pooling"})
 @CapabilityDescription("Provides a CQL connection session for CQL processors and controller services to work with Apache Cassandra. "
         + "Use this service for Apache Cassandra clusters; use ScyllaDBCQLExecutionService for ScyllaDB.")
@@ -187,7 +191,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
      */
     private static final String WRITE_TIMESTAMP_BIND_MARKER = "nifi_write_timestamp";
 
-    private static final boolean VALUE_LOGGING_ENABLED = Boolean.getBoolean("ENABLE_CQL_VALUE_LOGGING");
+    private static final boolean VALUE_LOGGING_ENABLED = RejectedValueException.VALUE_LOGGING_ENABLED;
 
     private CqlSession cassandraSession;
 
@@ -756,13 +760,18 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         } else if (value instanceof java.util.Date dateValue) {
             instant = dateValue.toInstant();
         } else if (value instanceof Number numberValue) {
-            instant = Instant.ofEpochMilli(numberValue.longValue());
+            instant = Instant.ofEpochMilli(ExactNumbers.toEpochMillis(numberValue));
         } else {
             throw new IllegalArgumentException("Cannot derive a write timestamp from a value of type "
                     + (value == null ? "null" : value.getClass().getName()));
         }
 
-        return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
+        // Microseconds since the epoch overflow a long about 292,000 years out, well inside what an Instant holds.
+        try {
+            return Math.addExact(Math.multiplyExact(instant.getEpochSecond(), 1_000_000L), instant.getNano() / 1_000L);
+        } catch (final ArithmeticException e) {
+            throw new RejectedValueException("A write timestamp cannot be derived: the value is out of range for a CQL write timestamp", null);
+        }
     }
 
     protected GeneratedResult generateInsert(QualifiedTableName table, Record sample,
@@ -1374,7 +1383,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             // Through the epoch milliseconds: java.sql.Date throws from toInstant().
             return Instant.ofEpochMilli(dateValue.getTime());
         } else if (value instanceof Number numberValue) {
-            return Instant.ofEpochMilli(numberValue.longValue());
+            return Instant.ofEpochMilli(ExactNumbers.toEpochMillis(numberValue));
         }
 
         final String text = value.toString().trim();
@@ -1456,22 +1465,6 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
     private void setTimestampBindValue(Object[] values, PreparedStatement preparedStatement, Record record, WriteOverrides overrides) {
         int index = preparedStatement.getVariableDefinitions().firstIndexOf(WRITE_TIMESTAMP_BIND_MARKER);
         values[index] = toEpochMicros(record.getValue(overrides.timestampField()));
-    }
-
-    /**
-     * A value this service rejects, with a message that names the value only when value logging is on. Kept
-     * apart from other conversion errors, which may quote the value whatever the setting.
-     */
-    private static final class RejectedValueException extends IllegalArgumentException {
-        RejectedValueException(final String message, final Throwable cause) {
-            // A parser's own error repeats the text it could not parse, so it is kept only when values may be shown.
-            super(message, VALUE_LOGGING_ENABLED ? cause : null);
-        }
-    }
-
-    /** The value, quoted and with a leading space, for an error message when value logging is on; otherwise nothing. */
-    private static String shown(final Object value) {
-        return VALUE_LOGGING_ENABLED ? " '" + value + "'" : "";
     }
 
     /** {@link #convertForCqlType}, with any failure reported against {@code target}, such as a field name. */
@@ -1702,16 +1695,32 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         };
     }
 
+    /**
+     * Bytes from numbers, each a whole number from -128 to 255: the signed range a {@code Byte} holds, or the
+     * unsigned one byte values are often written in, so 200 and -56 are the same byte. Anything else is rejected
+     * rather than narrowed, which would store 300 as 44.
+     */
     private static byte[] toBytes(final Object[] elements) {
         final byte[] bytes = new byte[elements.length];
         for (int i = 0; i < elements.length; i++) {
-            if (!(elements[i] instanceof Number number)) {
+            final long number = elements[i] instanceof Number value ? toWholeNumber(value) : Long.MIN_VALUE;
+            if (number < Byte.MIN_VALUE || number > 255) {
                 throw new RejectedValueException(String.format(
-                        "Value cannot be bound to a blob column: element %d%s is not a byte", i, shown(elements[i])), null);
+                        "Value cannot be bound to a blob column: element %d%s is not a byte, a whole number from -128 to 255",
+                        i, shown(elements[i])), null);
             }
-            bytes[i] = number.byteValue();
+            bytes[i] = (byte) number;
         }
         return bytes;
+    }
+
+    /** A blob element as a whole number, or {@link Long#MIN_VALUE} when it has a fraction or is out of range. */
+    private static long toWholeNumber(final Number value) {
+        try {
+            return ExactNumbers.toLong(value, "blob");
+        } catch (final RejectedValueException e) {
+            return Long.MIN_VALUE;
+        }
     }
 
     private static BigDecimal toBigDecimal(final Object value) {

@@ -56,6 +56,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -196,7 +197,7 @@ public abstract class AbstractCqlCrudIT {
     }
 
     @Test
-    @DisplayName("UDT fields take the same conversions as columns, and a value a column's codec rejects is named by its column but not shown")
+    @DisplayName("UDT fields take the same conversions as columns, and a value a column's codec rejects, text or a number too large, is named by its column but not shown")
     void testUdtFieldConversionsAndRejectedValueMessage() {
         final String keyspace = connectionInfo.keyspace();
         CqlDdl.executeWithRetry(session, "create type if not exists " + keyspace + ".crud_numbers (n int, big bigint)");
@@ -216,6 +217,12 @@ public abstract class AbstractCqlCrudIT {
                 table, new MapRecord(schema, Map.of("k", "bad", "sm", "not-a-number")), Map.of(), WriteOverrides.NONE));
         assertTrue(rejected.getMessage().contains("'sm'") && rejected.getMessage().contains("smallint"), rejected.getMessage());
         assertFalse(rejected.getMessage().contains("not-a-number"), rejected.getMessage());
+
+        // A number too large for the column is rejected the same way, not wrapped: 40000 used to be stored as -25536.
+        final IllegalArgumentException tooLarge = assertThrows(IllegalArgumentException.class, () -> sessionProvider.insert(
+                table, new MapRecord(schema, Map.of("k", "too-large", "sm", 40_000)), Map.of(), WriteOverrides.NONE));
+        assertTrue(tooLarge.getMessage().contains("'sm'") && tooLarge.getMessage().contains("out of range"), tooLarge.getMessage());
+        assertNull(session.execute("select k from " + keyspace + ".crud_udt where k = 'too-large'").one());
     }
 
     @Test

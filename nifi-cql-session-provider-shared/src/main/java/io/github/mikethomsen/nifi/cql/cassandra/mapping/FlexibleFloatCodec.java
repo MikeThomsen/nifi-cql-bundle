@@ -50,7 +50,7 @@ public class FlexibleFloatCodec implements TypeCodec<Object> {
 
     @Override
     public ByteBuffer encode(Object value, ProtocolVersion protocolVersion) {
-        return value == null ? null : floatCodec.encode(DataTypeUtils.toFloat(value, getCqlType().toString()), protocolVersion);
+        return value == null ? null : floatCodec.encode(convert(value), protocolVersion);
     }
 
     @Override
@@ -60,11 +60,21 @@ public class FlexibleFloatCodec implements TypeCodec<Object> {
 
     @Override
     public String format(Object value) {
-        return value == null ? "NULL" : floatCodec.format(DataTypeUtils.toFloat(value, getCqlType().toString()));
+        return value == null ? "NULL" : floatCodec.format(convert(value));
     }
 
     @Override
     public Object parse(String value) {
         return floatCodec.parse(value);
+    }
+
+    /**
+     * A number is converted by {@link ExactNumbers}, text and anything else by NiFi's {@code DataTypeUtils}; either
+     * way a finite value too large for a float is rejected rather than stored as Infinity.
+     */
+    private Float convert(final Object value) {
+        return value instanceof Number number
+                ? ExactNumbers.toFloat(number, "float")
+                : ExactNumbers.checkFloat(DataTypeUtils.toFloat(value, getCqlType().toString()), value, "float");
     }
 }

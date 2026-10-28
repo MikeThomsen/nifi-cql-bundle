@@ -78,4 +78,10 @@ public class CassandraCQLExecutionServiceBindValueTest {
         assertTrue(e.getMessage().contains("ISO-8601"), e.getMessage());
         assertFalse(e.getMessage().contains("not a timestamp"), e.getMessage());
     }
+
+    @Test
+    @DisplayName("A write timestamp too large for microseconds in a long is rejected rather than wrapped")
+    void testWriteTimestampOutOfRangeIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> CassandraCQLExecutionService.toEpochMicros(Long.MAX_VALUE));
+    }
 }

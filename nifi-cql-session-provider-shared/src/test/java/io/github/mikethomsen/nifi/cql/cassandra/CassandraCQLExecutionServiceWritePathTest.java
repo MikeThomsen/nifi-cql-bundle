@@ -283,9 +283,11 @@ public class CassandraCQLExecutionServiceWritePathTest {
         assertNull(exception.getCause());
     }
 
-    /** A host name is rejected rather than looked up; a fraction has no varint. */
+    /** A host name is rejected rather than looked up; a fraction has no varint; a number that does not fit is not narrowed. */
     static Stream<Arguments> rejectedValues() {
-        return Stream.of(arguments("localhost", DataTypes.INET), arguments(1.5d, DataTypes.VARINT), arguments("1 week", DataTypes.DURATION));
+        return Stream.of(arguments("localhost", DataTypes.INET), arguments(1.5d, DataTypes.VARINT), arguments("1 week", DataTypes.DURATION),
+                // Neither may be narrowed: 300 is not a byte, and the BigInteger does not fit the long a timestamp is.
+                arguments(new Object[] {1, 300}, DataTypes.BLOB), arguments(new BigInteger("123456789012345678901234567890"), DataTypes.TIMESTAMP));
     }
 
     /**
