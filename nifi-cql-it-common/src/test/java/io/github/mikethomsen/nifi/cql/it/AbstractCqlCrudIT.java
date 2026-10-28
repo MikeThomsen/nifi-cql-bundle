@@ -19,6 +19,7 @@ package io.github.mikethomsen.nifi.cql.it;
 import com.datastax.oss.driver.api.core.CqlSession;
 import com.datastax.oss.driver.api.core.cql.Row;
 import com.datastax.oss.driver.api.core.data.CqlDuration;
+import org.apache.nifi.record.path.RecordPath;
 import org.apache.nifi.serialization.SimpleRecordSchema;
 import org.apache.nifi.serialization.record.MapRecord;
 import org.apache.nifi.serialization.record.RecordField;
@@ -30,6 +31,7 @@ import io.github.mikethomsen.nifi.cql.api.constants.UpdateMethod;
 import io.github.mikethomsen.nifi.cql.api.exception.QueryFailureException;
 import io.github.mikethomsen.nifi.cql.api.lookup.CqlRow;
 import io.github.mikethomsen.nifi.cql.api.lookup.CqlStatementResult;
+import io.github.mikethomsen.nifi.cql.api.metadata.PrimaryKeyIdentifier;
 import io.github.mikethomsen.nifi.cql.api.metadata.QualifiedTableName;
 import io.github.mikethomsen.nifi.cql.api.service.AbstractCQLExecutionService;
 import io.github.mikethomsen.nifi.cql.api.service.CQLExecutionService;
@@ -166,6 +168,53 @@ public abstract class AbstractCqlCrudIT {
 
         sessionProvider.update(table, record, Map.of(), updateKeys, UpdateMethod.DECREMENT, WriteOverrides.NONE);
         assertEquals(1, counterValue("abcdef"));
+    }
+
+    @Test
+    @DisplayName("A key read from a nested field is written, whatever the case of the override's keyspace and table, and the nested field is not written as a column")
+    void testOverrideFromNestedFieldWithMixedCaseNames() {
+        final QualifiedTableName table = new QualifiedTableName(null, "message");
+        final Map<PrimaryKeyIdentifier, RecordPath> overrides = Map.of(
+                new PrimaryKeyIdentifier("TESTSPACE", "Message", "sender"), RecordPath.compile("/customer/id"));
+        final Instant whenSent = Instant.parse("2026-10-28T12:00:00Z");
+        // The shape of the PutCQLRecord docs' example, as a JSON reader produces it: the key is inside a nested record.
+        final RecordSchema customerSchema = new SimpleRecordSchema(List.of(new RecordField("id", RecordFieldType.STRING.getDataType())));
+        final java.util.function.Function<String, MapRecord> record = text -> new MapRecord(new SimpleRecordSchema(List.of(
+                        new RecordField("customer", RecordFieldType.RECORD.getRecordDataType(customerSchema)),
+                        new RecordField("receiver", RecordFieldType.STRING.getDataType()),
+                        new RecordField("message", RecordFieldType.STRING.getDataType()),
+                        new RecordField("when_sent", RecordFieldType.TIMESTAMP.getDataType()))),
+                Map.of("customer", new MapRecord(customerSchema, Map.of("id", "nested-sender")), "receiver", "r", "message", text, "when_sent", whenSent));
+
+        sessionProvider.insert(table, record.apply("inserted"), overrides, WriteOverrides.NONE);
+        sessionProvider.update(table, record.apply("updated"), overrides, List.of("sender", "receiver", "when_sent"),
+                UpdateMethod.SET, WriteOverrides.NONE);
+
+        assertEquals("updated", session.execute("select message from testspace.message where sender = 'nested-sender'")
+                .one().getString("message"));
+    }
+
+    @Test
+    @DisplayName("UDT fields take the same conversions as columns, and a value a column's codec rejects is named by its column but not shown")
+    void testUdtFieldConversionsAndRejectedValueMessage() {
+        final String keyspace = connectionInfo.keyspace();
+        CqlDdl.executeWithRetry(session, "create type if not exists " + keyspace + ".crud_numbers (n int, big bigint)");
+        CqlDdl.executeWithRetry(session, "create table if not exists " + keyspace + ".crud_udt (k text primary key, a frozen<crud_numbers>, sm smallint)");
+        final QualifiedTableName table = new QualifiedTableName(keyspace, "crud_udt");
+        final RecordSchema schema = new SimpleRecordSchema(List.of(
+                new RecordField("k", RecordFieldType.STRING.getDataType()),
+                new RecordField("a", RecordFieldType.MAP.getMapDataType(RecordFieldType.STRING.getDataType())),
+                new RecordField("sm", RecordFieldType.STRING.getDataType())));
+
+        sessionProvider.insert(table, new MapRecord(schema, Map.of("k", "udt", "a", Map.of("n", "7", "big", 5))), Map.of(), WriteOverrides.NONE);
+        final Row row = session.execute("select a from " + keyspace + ".crud_udt where k = 'udt'").one();
+        assertEquals(7, row.getUdtValue("a").getInt("n"));
+        assertEquals(5L, row.getUdtValue("a").getLong("big"));
+
+        final IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class, () -> sessionProvider.insert(
+                table, new MapRecord(schema, Map.of("k", "bad", "sm", "not-a-number")), Map.of(), WriteOverrides.NONE));
+        assertTrue(rejected.getMessage().contains("'sm'") && rejected.getMessage().contains("smallint"), rejected.getMessage());
+        assertFalse(rejected.getMessage().contains("not-a-number"), rejected.getMessage());
     }
 
     @Test
