@@ -270,6 +270,11 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
 
             final PropertyValue defaultTtlProperty = context.getProperty(DEFAULT_TTL).evaluateAttributeExpressions();
             this.defaultTtl = defaultTtlProperty.isSet() ? defaultTtlProperty.asDuration() : null;
+            // Validation cannot check a value from Expression Language, so it is checked here, once evaluated:
+            // a TTL out of range fails enabling rather than every write.
+            if (defaultTtl != null) {
+                TimeToLive.toSeconds(defaultTtl);
+            }
 
             // Recorded here rather than in buildSession, which verify() also calls: verifying a different
             // keyspace must not change the one this enabled service resolves table names against.
@@ -760,7 +765,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         return instant.getEpochSecond() * 1_000_000L + instant.getNano() / 1_000L;
     }
 
-    protected GeneratedResult generateInsert(QualifiedTableName table, RecordSchema schema,
+    protected GeneratedResult generateInsert(QualifiedTableName table, Record sample,
                                               Map<PrimaryKeyIdentifier, RecordPath> primaryKeyOverrides,
                                               Integer ttlSeconds, String timestampField) {
         InsertInto insertQuery = table.isQualified()
@@ -770,7 +775,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
 
         RegularInsert regularInsert = null;
         final String timestampOnlyField = timestampOnlyField(table, timestampField);
-        for (String fieldName : columnNamesIncludingOverrideOnly(table, schema, primaryKeyOverrides)) {
+        for (String fieldName : columnNamesIncludingOverrideOnly(table, sample, primaryKeyOverrides)) {
             if (fieldName.equals(timestampOnlyField)) {
                 continue;
             }
@@ -804,15 +809,48 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
      * Returns every schema field name in schema order, followed by any primary key override target column for
      * this table that has no same-named schema field.
      */
-    private List<String> columnNamesIncludingOverrideOnly(QualifiedTableName table, RecordSchema schema,
+    private List<String> columnNamesIncludingOverrideOnly(QualifiedTableName table, Record sample,
                                                             Map<PrimaryKeyIdentifier, RecordPath> primaryKeyOverrides) {
-        final List<String> columnNames = new ArrayList<>(schema.getFieldNames());
+        final List<String> columnNames = new ArrayList<>(fieldsToWrite(table, sample, primaryKeyOverrides));
         for (String overrideFieldName : overrideFieldNamesForTable(table, primaryKeyOverrides)) {
-            if (!columnNames.contains(overrideFieldName)) {
+            if (columnNames.stream().noneMatch(name -> sameCqlName(name, overrideFieldName))) {
                 columnNames.add(overrideFieldName);
             }
         }
         return columnNames;
+    }
+
+    /**
+     * The sample record's field names, less any that only supply a primary key override's value: a top-level
+     * field that an override for this table reads from, such as {@code customer} for {@code /customer/id}, and
+     * that the table has no column for. Writing one would fail, since there is nowhere to write it. Any other
+     * field is kept, so a field that matches no column still fails the write, as before. The source fields are
+     * found by evaluating each override against the sample, since a compiled RecordPath does not expose its
+     * segments.
+     */
+    private List<String> fieldsToWrite(QualifiedTableName table, Record sample,
+                                       Map<PrimaryKeyIdentifier, RecordPath> primaryKeyOverrides) {
+        final List<String> fieldNames = sample.getSchema().getFieldNames();
+        final Set<String> overrideSources = new HashSet<>();
+        for (Map.Entry<PrimaryKeyIdentifier, RecordPath> override : overridesForTable(table, primaryKeyOverrides)) {
+            override.getValue().evaluate(sample).getSelectedFields()
+                    .forEach(value -> overrideSources.add(topLevelFieldName(value)));
+        }
+        if (fieldNames.stream().noneMatch(overrideSources::contains)) {
+            return fieldNames;
+        }
+
+        final QualifiedTableName resolved = resolveKeyspace(table);
+        final Optional<TableMetadata> metadata = resolved.isQualified()
+                ? cassandraSession.getMetadata().getKeyspace(resolved.keyspace()).flatMap(keyspace -> keyspace.getTable(resolved.table()))
+                : Optional.empty();
+        if (metadata.isEmpty()) {
+            return fieldNames;
+        }
+
+        return fieldNames.stream()
+                .filter(fieldName -> !overrideSources.contains(fieldName) || metadata.get().getColumn(fieldName).isPresent())
+                .toList();
     }
 
     /**
@@ -843,18 +881,43 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
      * does.
      */
     private Set<String> overrideFieldNamesForTable(QualifiedTableName table, Map<PrimaryKeyIdentifier, RecordPath> primaryKeyOverrides) {
-        final QualifiedTableName resolved = resolveKeyspace(table);
-        return primaryKeyOverrides.keySet().stream()
-                .filter(identifier -> identifier.keyspace().equals(resolved.keyspace()) && identifier.tableName().equals(resolved.table()))
-                .map(PrimaryKeyIdentifier::fieldName)
+        return overridesForTable(table, primaryKeyOverrides).stream()
+                .map(override -> override.getKey().fieldName())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    /** The name of the record's top-level field that holds {@code value}: the ancestor just below the record itself. */
+    private static String topLevelFieldName(final FieldValue value) {
+        FieldValue current = value;
+        while (current.getParent().flatMap(FieldValue::getParent).isPresent()) {
+            current = current.getParent().get();
+        }
+        return current.getField().getFieldName();
+    }
+
+    /** The overrides naming this table, with keyspace and table compared as CQL identifiers, as {@link #getRecordPathOverride} does. */
+    private List<Map.Entry<PrimaryKeyIdentifier, RecordPath>> overridesForTable(QualifiedTableName table,
+                                                                                 Map<PrimaryKeyIdentifier, RecordPath> primaryKeyOverrides) {
+        final QualifiedTableName resolved = resolveKeyspace(table);
+        if (!resolved.isQualified()) {
+            return List.of();
+        }
+        return primaryKeyOverrides.entrySet().stream()
+                .filter(override -> sameCqlName(override.getKey().keyspace(), resolved.keyspace())
+                        && sameCqlName(override.getKey().tableName(), resolved.table()))
+                .toList();
+    }
+
+    /** Whether {@code key} is a record field or the column of an override for this table, compared as CQL identifiers. */
+    private static boolean isKnownKey(final String key, final RecordSchema schema, final Set<String> overrideFieldNames) {
+        return schema.getFieldNames().contains(key) || overrideFieldNames.stream().anyMatch(name -> sameCqlName(name, key));
     }
 
     @Override
     public void insert(QualifiedTableName table, Record record, Map<PrimaryKeyIdentifier, RecordPath> primaryKeyOverrides,
                         WriteOverrides overrides) throws QueryFailureException {
         final boolean useTimestampOverride = hasTimestampOverride(overrides);
-        GeneratedResult result = generateInsert(table, record.getSchema(), primaryKeyOverrides, resolveTtlSeconds(overrides, defaultTtl), useTimestampOverride ? overrides.timestampField() : null);
+        GeneratedResult result = generateInsert(table, record, primaryKeyOverrides, resolveTtlSeconds(overrides, defaultTtl), useTimestampOverride ? overrides.timestampField() : null);
         PreparedStatement preparedStatement = prepare(result.statement);
 
         Object[] values = getBindValues(table, primaryKeyOverrides, record, preparedStatement, result.keysUsed);
@@ -885,7 +948,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
 
         final boolean useTimestampOverride = hasTimestampOverride(overrides);
         BatchStatementBuilder builder = BatchStatement.builder(toDriverBatchType(batchType));
-        GeneratedResult result = generateInsert(table, records.get(0).getSchema(), primaryKeyOverrides, resolveTtlSeconds(overrides, defaultTtl), useTimestampOverride ? overrides.timestampField() : null);
+        GeneratedResult result = generateInsert(table, records.get(0), primaryKeyOverrides, resolveTtlSeconds(overrides, defaultTtl), useTimestampOverride ? overrides.timestampField() : null);
         PreparedStatement preparedStatement = prepare(result.statement);
 
         if (getLogger().isDebugEnabled()) {
@@ -1088,7 +1151,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         // but getBindValues can still resolve its value from the override alone.
         final Set<String> overrideFieldNames = overrideFieldNamesForTable(cassandraTable, primaryKeyOverrides);
         for (String deleteKey : deleteKeyNames) {
-            if (!schema.getFieldNames().contains(deleteKey) && !overrideFieldNames.contains(deleteKey)) {
+            if (!isKnownKey(deleteKey, schema, overrideFieldNames)) {
                 throw new IllegalArgumentException("Delete key '" + deleteKey + "' is not present in the record schema");
             }
         }
@@ -1124,7 +1187,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         // resolve its value perfectly well from the override alone.
         final Set<String> overrideFieldNames = overrideFieldNamesForTable(cassandraTable, primaryKeyOverrides);
         for (String updateKey : updateKeyNames) {
-            if (!schema.getFieldNames().contains(updateKey) && !overrideFieldNames.contains(updateKey)) {
+            if (!isKnownKey(updateKey, schema, overrideFieldNames)) {
                 throw new IllegalArgumentException("Update key '" + updateKey + "' is not present in the record schema");
             }
         }
@@ -1145,7 +1208,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         UpdateWithAssignments updateAssignments = null;
 
         final String timestampOnlyField = updateMethod == UpdateMethod.SET ? timestampOnlyField(cassandraTable, timestampField) : null;
-        List<String> otherKeys = schema.getFieldNames().stream()
+        List<String> otherKeys = fieldsToWrite(cassandraTable, record, primaryKeyOverrides).stream()
                 .filter(fieldName -> !updateKeyNames.contains(fieldName) && !fieldName.equals(timestampOnlyField))
                 .toList();
 
@@ -1415,8 +1478,27 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             // Names only the CQL and Java types, never the value.
             throw e;
         } catch (final RuntimeException e) {
-            throw conversionFailure("A value cannot be encoded for its column", e);
+            throw conversionFailure(rejectedMarker(preparedStatement, values), e);
         }
+    }
+
+    /**
+     * Which bind marker's value the codecs rejected, found by binding each value on its own. Only reached once a
+     * bind has failed, so the extra binds cost nothing on the normal path.
+     */
+    private static String rejectedMarker(final PreparedStatement preparedStatement, final Object[] values) {
+        for (int index = 0; index < values.length; index++) {
+            final Object[] single = new Object[index + 1];
+            single[index] = values[index];
+            try {
+                preparedStatement.bind(single);
+            } catch (final RuntimeException e) {
+                final ColumnDefinition marker = preparedStatement.getVariableDefinitions().get(index);
+                return String.format("Bind marker %d ('%s') cannot be bound to its %s column",
+                        index + 1, marker.getName().asInternal(), marker.getType().asCql(false, true));
+            }
+        }
+        return "A value cannot be encoded for its column";
     }
 
     /**
@@ -1426,10 +1508,10 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
      */
     static IllegalArgumentException conversionFailure(final String context, final RuntimeException e) {
         if (e instanceof RejectedValueException || VALUE_LOGGING_ENABLED) {
-            return new IllegalArgumentException(context + ": " + e.getMessage(), e);
+            return new RejectedValueException(context + ": " + e.getMessage(), e);
         }
-        return new IllegalArgumentException(context + ": " + e.getClass().getSimpleName()
-                + ". Set ENABLE_CQL_VALUE_LOGGING=true to include the value and the full error.");
+        return new RejectedValueException(context + ": " + e.getClass().getSimpleName()
+                + ". Set ENABLE_CQL_VALUE_LOGGING=true to include the value and the full error.", null);
     }
 
     private Object convertForCqlType(final Object value, final DataType cqlType) {
@@ -1451,17 +1533,17 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             for (int i = 0; i < fieldNames.size(); i++) {
                 final String fieldName = fieldNames.get(i);
                 final DataType fieldCqlType = udtType.getFieldTypes().get(i);
-                final Object fieldValue = convertForCqlType(fieldValueLookup.apply(fieldName), fieldCqlType);
                 try {
-                    // A null field is set directly against its declared CQL type rather than through a codec
-                    // lookup. Resolving the codec from the value's runtime class cannot work when there is no
-                    // value: the lookup becomes [<field type> <-> java.lang.Object], which no codec satisfies,
-                    // and that made any UDT carrying an absent or optional field unwritable.
+                    final Object fieldValue = convertForCqlType(fieldValueLookup.apply(fieldName), fieldCqlType);
+                    // The codec is looked up from the value, as for a tuple element, so the fallback codecs that
+                    // bind text or a narrower number are found; a UDT read from the schema carries the session's
+                    // registry, where they are registered. A null field is set against its declared type, since
+                    // there is no value to look a codec up from.
                     udtValue = fieldValue == null
-                            ? udtValue.setToNull(fieldName)
-                            : udtValue.set(fieldName, fieldValue, (Class<Object>) fieldValue.getClass());
-                } catch (Exception ex) {
-                    throw new RuntimeException(ex);
+                            ? udtValue.setToNull(i)
+                            : udtValue.set(i, fieldValue, udtValue.codecRegistry().codecFor(fieldCqlType, fieldValue));
+                } catch (final RuntimeException e) {
+                    throw conversionFailure("UDT field '" + fieldName + "' cannot be bound to its " + fieldCqlType.asCql(false, true) + " type", e);
                 }
             }
 

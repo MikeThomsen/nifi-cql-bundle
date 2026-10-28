@@ -58,7 +58,8 @@ The _Statement Type_ property (or the `cql.statement.type` FlowFile attribute, w
 to use it) selects between two CQL statement shapes. An attribute value that is neither routes the FlowFile to
 `failure`:
 
-* **INSERT** - every field in each record is written to the column of the same name. There is no separate
+* **INSERT** - every field in each record is written to the column of the same name, except a field that
+  only supplies a primary key override's value (see below). There is no separate
   concept of "which fields are the primary key" for an INSERT: Cassandra requires all primary key columns to
   be supplied as ordinary column values in the statement, the same as any other column.
 * **UPDATE** - requires _Update Keys_, a comma-separated list of column names that identify the row to
@@ -175,6 +176,10 @@ matching top-level record field, add a dynamic property:
 
 Every record written to `analytics.customer_events` now resolves `customer_id` from the nested
 `customer/id` field instead of requiring a top-level `customer_id` field.
+
+A field that an override reads from, such as `customer` here, is not itself written when the table has no
+column of that name, for an INSERT or an UPDATE alike; there would be nowhere to write it. Any other field that
+matches no column still fails the write, so a misspelled field name is not silently dropped.
 
 ## Writing to a timeuuid column
 
