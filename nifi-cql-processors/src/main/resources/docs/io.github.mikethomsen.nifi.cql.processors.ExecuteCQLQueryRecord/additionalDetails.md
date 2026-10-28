@@ -24,6 +24,9 @@ configured _Result Set Output Writer_ (any `RecordSetWriterFactory`, so JSON, Av
 targets). Results stream row-by-row rather than buffering the whole result set in memory, so arbitrarily
 large result sets are supported.
 
+Only a `SELECT` is run. Any other statement fails validation, or, when the query comes from Expression
+Language, routes the FlowFile to `failure` without being sent to the cluster. Use _ExecuteCQL_ for writes.
+
 The processor can run two ways:
 
 * **Triggered by an incoming FlowFile** - the query, and any property using
@@ -120,7 +123,8 @@ choose its field name.
   represented as a string field. A tuple's value is its CQL literal, such as `(7,'x')`, and a duration's is
   its CQL text, such as `1h30m`; any other such type holds the driver's own decoded object. This keeps one
   unusual column from failing the entire query; it does not attempt to give the column's structure (a
-  tuple's individual elements, a vector's components) back as anything richer.
+  tuple's individual elements, a vector's components) back as anything richer. A tuple or duration read this
+  way can be written back by _PutCQLRecord_ as it is.
 
 ### String-declared fields and their values
 

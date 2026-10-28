@@ -387,8 +387,9 @@ public class PutCQLRecord extends AbstractCQLProcessor {
         return new HashMap<>(recordPathOverrides
                 .entrySet()
                 .stream()
-                .filter(e -> e.getKey().keyspace().equals(tableName.keyspace())
-                        && e.getKey().tableName().equals(tableName.table()))
+                // Both names are unquoted CQL identifiers, which CQL matches whatever their case.
+                .filter(e -> e.getKey().keyspace().equalsIgnoreCase(tableName.keyspace())
+                        && e.getKey().tableName().equalsIgnoreCase(tableName.table()))
                 .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue)));
     }
 
@@ -568,7 +569,7 @@ public class PutCQLRecord extends AbstractCQLProcessor {
             // Also reachable mid-stream (an override RecordPath resolving to zero values on a later record),
             // so earlier batches may already be committed - report them, as the failure paths below do.
             final FlowFile failedFlowFile = session.putAttribute(inputFlowFile, RECORDS_WRITTEN_ATTRIBUTE, String.valueOf(recordsAdded.get()));
-            getLogger().error("Invalid PutCQLRecord configuration for {}", inputFlowFile, e);
+            getLogger().error("Invalid PutCQLRecord configuration or record value for {}", inputFlowFile, e);
             session.transfer(failedFlowFile, REL_FAILURE);
         } catch (Exception e) {
             error = true;

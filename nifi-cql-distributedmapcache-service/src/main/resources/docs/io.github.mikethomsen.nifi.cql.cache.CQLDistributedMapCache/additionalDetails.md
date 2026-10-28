@@ -179,10 +179,17 @@ across the table, whereas deletes tend to cluster and leave tombstones the next 
 
 ## Maximum Value Size
 
-Values larger than _Maximum Value Size_ are rejected with a `SerializationException` **before anything is
+Values larger than _Maximum Value Size_ are rejected with an `IOException` **before anything is
 sent**, rather than being refused by the server or, worse, accepted. Cassandra and ScyllaDB tolerate large
 blobs poorly well below their hard limits: large values inflate heap pressure during compaction and repair
 and slow every read of the partition holding them.
 
 The default of 1 MB is a conservative ceiling for a cache. Raise it deliberately, having considered what a
 value of that size does to the cluster when several million of them exist.
+
+## Errors
+
+Every failure is reported as an `IOException`, the error the cache client contract declares: an oversized
+value, a cluster that cannot be reached, and a statement the cluster rejects, such as one against a table that
+does not exist. A processor using the cache, such as _DetectDuplicate_, can then route the FlowFile to
+`failure` rather than retrying it indefinitely. The exception's cause holds the original error.

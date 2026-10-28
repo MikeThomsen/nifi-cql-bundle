@@ -35,6 +35,12 @@ every record inserted, updated or deleted, including any personal data or secret
 property is read once at startup and applies to every service in the JVM. Turn it on only while
 diagnosing a problem, on data you are allowed to log, and restart NiFi without it afterwards.
 
+The same property controls whether a value that cannot be converted for its column appears in the
+error. With it off, the error names the field or parameter and the column type, and says what was
+expected, but leaves out the value and any underlying error that would repeat it. Since those errors
+reach `nifi-app.log` and the processor's bulletins, turning the property on also puts rejected values
+there.
+
 ## Driver Configuration File
 
 The connection services accept an optional Java driver configuration file (HOCON, such as an

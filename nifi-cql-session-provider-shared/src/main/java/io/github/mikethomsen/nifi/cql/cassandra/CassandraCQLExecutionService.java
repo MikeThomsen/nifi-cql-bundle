@@ -34,6 +34,7 @@ import com.datastax.oss.driver.api.core.cql.ResultSet;
 import com.datastax.oss.driver.api.core.cql.Row;
 import com.datastax.oss.driver.api.core.cql.SimpleStatement;
 import com.datastax.oss.driver.api.core.cql.SimpleStatementBuilder;
+import com.datastax.oss.driver.api.core.data.CqlDuration;
 import com.datastax.oss.driver.api.core.data.TupleValue;
 import com.datastax.oss.driver.api.core.data.UdtValue;
 import com.datastax.oss.driver.api.core.metadata.schema.ColumnMetadata;
@@ -51,6 +52,8 @@ import com.datastax.oss.driver.api.core.type.MapType;
 import com.datastax.oss.driver.api.core.type.SetType;
 import com.datastax.oss.driver.api.core.type.TupleType;
 import com.datastax.oss.driver.api.core.type.UserDefinedType;
+import com.datastax.oss.driver.api.core.type.codec.CodecNotFoundException;
+import com.datastax.oss.driver.api.core.type.codec.registry.CodecRegistry;
 import com.datastax.oss.driver.api.core.type.codec.registry.MutableCodecRegistry;
 import com.datastax.oss.driver.api.querybuilder.QueryBuilder;
 import com.datastax.oss.driver.api.querybuilder.delete.DeleteSelection;
@@ -694,7 +697,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         final PreparedStatement preparedStatement = prepare(statement);
 
         return parameters != null && !parameters.isEmpty()
-                ? preparedStatement.bind(toBindValues(preparedStatement, parameters))
+                ? encode(preparedStatement, toBindValues(preparedStatement, parameters))
                 : preparedStatement.bind();
     }
 
@@ -1190,7 +1193,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             getLogger().debug("Executing CQL delete: {}{}", result.statement().getQuery(), valuesFragment(values));
         }
 
-        BoundStatement deleteStatement = preparedStatement.bind(values);
+        BoundStatement deleteStatement = encode(preparedStatement, values);
 
         try {
             cassandraSession.execute(deleteStatement);
@@ -1248,7 +1251,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
                 value = record.getValue(fieldName);
             }
             DataType cqlType = variableDefinitions.get(index).getType();
-            result[index] = convertForCqlType(value, cqlType);
+            result[index] = convertForBind(value, cqlType, "Field '" + fieldName + "'");
         }
 
         return result;
@@ -1273,7 +1276,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             final DataType cqlType = bindMarkers.get(index).getType();
             final Object value = parameters.get(index);
 
-            values[index] = convertForCqlType(value, cqlType);
+            values[index] = convertForBind(value, cqlType, "Parameter " + (index + 1));
         }
 
         return values;
@@ -1306,9 +1309,9 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             try {
                 return Instant.ofEpochMilli(Long.parseLong(text));
             } catch (final NumberFormatException ignored) {
-                throw new IllegalArgumentException(String.format(
-                        "Value '%s' cannot be bound to a timestamp column: expected an ISO-8601 instant such as "
-                                + "2026-08-07T14:30:00Z, or a count of milliseconds since the epoch", text), e);
+                throw new RejectedValueException(String.format(
+                        "Value%s cannot be bound to a timestamp column: expected an ISO-8601 instant such as "
+                                + "2026-08-07T14:30:00Z, or a count of milliseconds since the epoch", shown(text)), e);
             }
         }
     }
@@ -1319,7 +1322,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
      * tombstone. A primary key column cannot be unset, and the cluster rejects the statement if one is.
      */
     static BoundStatement bind(final PreparedStatement preparedStatement, final Object[] values, final WriteOverrides overrides) {
-        BoundStatement boundStatement = preparedStatement.bind(values);
+        BoundStatement boundStatement = encode(preparedStatement, values);
 
         if (overrides != null && overrides.unsetNulls()) {
             for (int index = 0; index < values.length; index++) {
@@ -1347,18 +1350,25 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
 
     private RecordPath getRecordPathOverride(QualifiedTableName tableName, String fieldName,
                                           Map<PrimaryKeyIdentifier, RecordPath> overrides) {
-        final String cleanFieldName = CqlIdentifier.fromCql(fieldName).asInternal();
         final String keyspace = tableName.isQualified() ? tableName.keyspace() : defaultKeyspace;
+        if (keyspace == null) {
+            return null;
+        }
 
+        // All three parts are compared as CQL identifiers, so an unquoted name matches whatever its case.
         Optional<Map.Entry<PrimaryKeyIdentifier, RecordPath>> identifier = overrides
                 .entrySet()
                 .stream()
-                .filter((e) -> e.getKey().keyspace().equals(keyspace)
-                        && e.getKey().tableName().equals(tableName.table())
-                        && CqlIdentifier.fromCql(e.getKey().fieldName()).asInternal().equals(cleanFieldName))
+                .filter((e) -> sameCqlName(e.getKey().keyspace(), keyspace)
+                        && sameCqlName(e.getKey().tableName(), tableName.table())
+                        && sameCqlName(e.getKey().fieldName(), fieldName))
                 .findFirst();
 
         return identifier.map(Map.Entry::getValue).orElse(null);
+    }
+
+    private static boolean sameCqlName(final String first, final String second) {
+        return CqlIdentifier.fromCql(first).equals(CqlIdentifier.fromCql(second));
     }
 
     /**
@@ -1370,6 +1380,56 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
     private void setTimestampBindValue(Object[] values, PreparedStatement preparedStatement, Record record, WriteOverrides overrides) {
         int index = preparedStatement.getVariableDefinitions().firstIndexOf(WRITE_TIMESTAMP_BIND_MARKER);
         values[index] = toEpochMicros(record.getValue(overrides.timestampField()));
+    }
+
+    /**
+     * A value this service rejects, with a message that names the value only when value logging is on. Kept
+     * apart from other conversion errors, which may quote the value whatever the setting.
+     */
+    private static final class RejectedValueException extends IllegalArgumentException {
+        RejectedValueException(final String message, final Throwable cause) {
+            // A parser's own error repeats the text it could not parse, so it is kept only when values may be shown.
+            super(message, VALUE_LOGGING_ENABLED ? cause : null);
+        }
+    }
+
+    /** The value, quoted and with a leading space, for an error message when value logging is on; otherwise nothing. */
+    private static String shown(final Object value) {
+        return VALUE_LOGGING_ENABLED ? " '" + value + "'" : "";
+    }
+
+    /** {@link #convertForCqlType}, with any failure reported against {@code target}, such as a field name. */
+    private Object convertForBind(final Object value, final DataType cqlType, final String target) {
+        try {
+            return convertForCqlType(value, cqlType);
+        } catch (final RuntimeException e) {
+            throw conversionFailure(target + " cannot be bound to its " + cqlType.asCql(false, true) + " column", e);
+        }
+    }
+
+    /** Binds values that have been converted, encoding each with its column's codec, which can also reject one. */
+    private static BoundStatement encode(final PreparedStatement preparedStatement, final Object[] values) {
+        try {
+            return preparedStatement.bind(values);
+        } catch (final CodecNotFoundException e) {
+            // Names only the CQL and Java types, never the value.
+            throw e;
+        } catch (final RuntimeException e) {
+            throw conversionFailure("A value cannot be encoded for its column", e);
+        }
+    }
+
+    /**
+     * The error for a value that could not be converted. This service's own messages leave the value out unless
+     * value logging is on, so they are kept. Others, NiFi's and the driver's, can quote the value, so with value
+     * logging off they are reduced to their type and dropped as a cause.
+     */
+    static IllegalArgumentException conversionFailure(final String context, final RuntimeException e) {
+        if (e instanceof RejectedValueException || VALUE_LOGGING_ENABLED) {
+            return new IllegalArgumentException(context + ": " + e.getMessage(), e);
+        }
+        return new IllegalArgumentException(context + ": " + e.getClass().getSimpleName()
+                + ". Set ENABLE_CQL_VALUE_LOGGING=true to include the value and the full error.");
     }
 
     private Object convertForCqlType(final Object value, final DataType cqlType) {
@@ -1432,6 +1492,10 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             return converted;
         }
 
+        if (cqlType instanceof TupleType tupleType) {
+            return toTupleValue(value, tupleType);
+        }
+
         if (cqlType.equals(DataTypes.UUID)) {
             return DataTypeUtils.toUUID(value);
         }
@@ -1453,6 +1517,13 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         if (cqlType.equals(DataTypes.INET)) {
             return toInetAddress(value);
         }
+        // The counter codec only binds a number, and an ExecuteCQL parameter is always text.
+        if (cqlType.equals(DataTypes.COUNTER)) {
+            return value instanceof Number ? value : parseNumber(value, Long::valueOf, "counter");
+        }
+        if (cqlType.equals(DataTypes.DURATION)) {
+            return toCqlDuration(value);
+        }
 
         // The driver's own codec already rejects a non-version-1 UUID bound to a timeuuid column, but only
         // via a confusing CodecNotFoundException ("Codec not found for requested operation: [TIMEUUID <->
@@ -1461,14 +1532,65 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         if (cqlType.equals(DataTypes.TIMEUUID)) {
             final UUID uuid = DataTypeUtils.toUUID(value);
             if (uuid.version() != 1) {
-                throw new IllegalArgumentException(String.format(
-                        "Value '%s' is not a valid timeuuid: version %d, but timeuuid columns require a version 1 (time-based) UUID",
-                        uuid, uuid.version()));
+                throw new RejectedValueException(String.format(
+                        "Value%s is not a valid timeuuid: version %d, but timeuuid columns require a version 1 (time-based) UUID",
+                        shown(uuid), uuid.version()), null);
             }
             return uuid;
         }
 
         return value;
+    }
+
+    /**
+     * A tuple value from its elements, as an {@code Object[]} or collection, or from its CQL literal text, such
+     * as {@code (7,'x')}, which is the form a tuple column is read as.
+     */
+    private TupleValue toTupleValue(final Object value, final TupleType tupleType) {
+        if (value instanceof TupleValue tuple) {
+            return tuple;
+        }
+
+        final CodecRegistry codecs = cassandraSession.getContext().getCodecRegistry();
+
+        if (!(value instanceof Object[] || value instanceof Collection<?>)) {
+            try {
+                return (TupleValue) codecs.codecFor(tupleType).parse(value.toString().trim());
+            } catch (final IllegalArgumentException e) {
+                throw new RejectedValueException(String.format("Value%s cannot be bound to a %s column: it is not a tuple literal",
+                        shown(value), tupleType.asCql(false, true)), e);
+            }
+        }
+
+        final List<?> elements = toElementStream(value).toList();
+        final List<DataType> componentTypes = tupleType.getComponentTypes();
+        if (elements.size() != componentTypes.size()) {
+            throw new RejectedValueException(String.format("A %s column needs %d elements, but the value has %d",
+                    tupleType.asCql(false, true), componentTypes.size(), elements.size()), null);
+        }
+
+        TupleValue tuple = tupleType.newValue();
+        for (int i = 0; i < elements.size(); i++) {
+            final Object element = convertForCqlType(elements.get(i), componentTypes.get(i));
+            // The codec is looked up from the value, not its class, so the fallback codecs that bind text to a
+            // number column are found. A null element is set against its declared type instead.
+            tuple = element == null ? tuple.setToNull(i) : tuple.set(i, element, codecs.codecFor(componentTypes.get(i), element));
+        }
+        return tuple;
+    }
+
+    /** A duration from a {@link CqlDuration}, as a duration column is read, or from its text, such as {@code 1h30m}. */
+    private static CqlDuration toCqlDuration(final Object value) {
+        if (value instanceof CqlDuration duration) {
+            return duration;
+        }
+
+        final String text = value.toString().trim();
+        try {
+            return CqlDuration.from(text);
+        } catch (final IllegalArgumentException e) {
+            throw new RejectedValueException(String.format("Value%s cannot be bound to a duration column: it is not a duration such as 1h30m or PT1H30M", shown(text)), e);
+        }
     }
 
     private static Stream<?> toElementStream(final Object value) {
@@ -1489,8 +1611,8 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         final byte[] bytes = new byte[elements.length];
         for (int i = 0; i < elements.length; i++) {
             if (!(elements[i] instanceof Number number)) {
-                throw new IllegalArgumentException(String.format(
-                        "Value cannot be bound to a blob column: element %d is %s, not a byte", i, elements[i]));
+                throw new RejectedValueException(String.format(
+                        "Value cannot be bound to a blob column: element %d%s is not a byte", i, shown(elements[i])), null);
             }
             bytes[i] = number.byteValue();
         }
@@ -1524,7 +1646,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         try {
             return decimal.toBigIntegerExact();
         } catch (final ArithmeticException e) {
-            throw new IllegalArgumentException(String.format("Value '%s' cannot be bound to a varint column: it is not a whole number", value), e);
+            throw new RejectedValueException(String.format("Value%s cannot be bound to a varint column: it is not a whole number", shown(value)), e);
         }
     }
 
@@ -1533,7 +1655,7 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         try {
             return parser.apply(text);
         } catch (final NumberFormatException e) {
-            throw new IllegalArgumentException(String.format("Value '%s' cannot be bound to a %s column: it is not a number", text, cqlType), e);
+            throw new RejectedValueException(String.format("Value%s cannot be bound to a %s column: it is not a number", shown(text), cqlType), e);
         }
     }
 
@@ -1571,8 +1693,8 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
             // reported below, the same as text that is no address at all
         }
 
-        throw new IllegalArgumentException(String.format(
-                "Value '%s' cannot be bound to an inet column: expected an IPv4 or IPv6 address literal", text));
+        throw new RejectedValueException(String.format(
+                "Value%s cannot be bound to an inet column: expected an IPv4 or IPv6 address literal", shown(text)), null);
     }
 
     @Override

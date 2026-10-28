@@ -65,6 +65,12 @@ class FakeCQLExecutionService extends AbstractControllerService implements CQLEx
     private final List<ExecutedStatement> executed = new ArrayList<>();
     private String keyColumn = "cache_key";
     private String valueColumn = "cache_value";
+    private RuntimeException failure;
+
+    /** Makes every later statement throw {@code failure}, as the real service does when the cluster refuses one. */
+    void failWith(final RuntimeException failure) {
+        this.failure = failure;
+    }
 
     void withColumns(final String keyColumn, final String valueColumn) {
         this.keyColumn = keyColumn;
@@ -86,6 +92,9 @@ class FakeCQLExecutionService extends AbstractControllerService implements CQLEx
     @Override
     public CqlStatementResult execute(final String cql, final List<Object> parameters, final QueryOverrides overrides) {
         executed.add(new ExecutedStatement(cql, parameters));
+        if (failure != null) {
+            throw failure;
+        }
 
         final String normalized = cql.toUpperCase();
         final boolean conditional = normalized.contains("IF NOT EXISTS") || normalized.contains("IF EXISTS");

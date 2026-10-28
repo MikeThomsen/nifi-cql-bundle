@@ -24,6 +24,10 @@
     <artifactId>nifi-scylladb-session-provider-service</artifactId>
     <packaging>jar</packaging>
 
+    <properties>
+        <driver.version>4.19.2.0</driver.version>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>org.apache.nifi</groupId>
@@ -48,11 +52,17 @@
             <artifactId>nifi-cql-session-provider-shared</artifactId>
         </dependency>
 
-        <!-- ScyllaDB's shard-aware fork, for nifi-cql-session-provider-shared's provided-scope dependency. -->
+        <!-- ScyllaDB's shard-aware fork, for nifi-cql-session-provider-shared's provided-scope dependencies. The
+             query builder is ScyllaDB's own, released with its core, so the two always share a version. -->
         <dependency>
             <groupId>com.scylladb</groupId>
             <artifactId>java-driver-core</artifactId>
-            <version>4.19.2.0</version>
+            <version>${driver.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.scylladb</groupId>
+            <artifactId>java-driver-query-builder</artifactId>
+            <version>${driver.version}</version>
         </dependency>
 
         <dependency>

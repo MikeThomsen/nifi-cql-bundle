@@ -28,6 +28,7 @@ import java.util.Date;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -69,11 +70,12 @@ public class CassandraCQLExecutionServiceBindValueTest {
     }
 
     @Test
-    @DisplayName("Text that is neither ISO-8601 nor epoch millis is rejected with the offending value in the message")
+    @DisplayName("Text that is neither ISO-8601 nor epoch millis is rejected with the accepted forms, but not the value, in the message")
     void testToInstantRejectsUnparseableTextWithAttributableMessage() {
         final IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
                 () -> CassandraCQLExecutionService.toInstant("not a timestamp"));
 
-        assertTrue(e.getMessage().contains("not a timestamp"), e.getMessage());
+        assertTrue(e.getMessage().contains("ISO-8601"), e.getMessage());
+        assertFalse(e.getMessage().contains("not a timestamp"), e.getMessage());
     }
 }
