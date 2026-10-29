@@ -170,10 +170,11 @@ Both are optional; when unset, the connection service's own configured values ap
 ## Splitting results across FlowFiles
 
 * _Max Rows Per Flow File_ (default `0`, meaning "one FlowFile for the whole result set") caps how many rows
-  go into a single output FlowFile, splitting a large result set into several. When this produces more than
-  one FlowFile, all of them share a `fragment.identifier` attribute, each gets a `fragment.index` giving its
-  position among the set, and (unless _Output Batch Size_ is also set - see below) a `fragment.count`
-  attribute giving the total, so they can be correlated and reassembled downstream.
+  go into a single output FlowFile, splitting a large result set into several. Every result FlowFile, even
+  a single one, gets a `fragment.identifier` shared by all of a query's results, a `fragment.index` giving its
+  position among them, and (unless _Output Batch Size_ is also set - see below) a `fragment.count` attribute
+  giving the total, so they can be correlated and reassembled downstream. Each also gets `record.count`, the
+  rows it holds, and `mime.type`, from the record writer.
 * _Output Batch Size_ (default `0`, meaning "commit once at the end") commits the session, releasing output
   FlowFiles downstream, every time this many are ready, instead of waiting for the entire result set to
   finish. This bounds memory/queue growth for very large result sets at the cost of releasing FlowFiles
@@ -188,6 +189,14 @@ Both are optional; when unset, the connection service's own configured values ap
 
 If the incoming FlowFile's query returns zero rows, no output FlowFile is created at all, and the incoming
 FlowFile (if any) is routed directly to `original`.
+
+Each result FlowFile carries a copy of the incoming FlowFile's attributes, so results can be matched to the
+FlowFile that asked for them. The exceptions are the `fragment.*` attributes, `cql.rows.sent`, `avro.schema`
+and the `schema.*` attributes, which each result sets for itself or which describe the incoming FlowFile rather
+than the results. A record writer configured to write its schema as an attribute still sets its own. In provenance, the
+results are recorded as forked from the incoming FlowFile. With _Output Batch Size_ set, the incoming FlowFile
+is released with the first batch, so results released after it still carry its attributes but are not linked
+to it in provenance.
 
 ## Relationships
 

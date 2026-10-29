@@ -263,6 +263,10 @@ public abstract class AbstractCqlCrudIT {
             assertEquals(CqlDuration.from("1h30m"), row.getCqlDuration("d"), key);
             assertEquals("(7,'x')", row.getTupleValue("t").getFormattedContents(), key);
         }
+
+        final IllegalArgumentException tooShort = assertThrows(IllegalArgumentException.class, () -> sessionProvider.insert(table,
+                new MapRecord(arraySchema, Map.of("k", "short", "t", new Object[] {"7"})), Map.of(), WriteOverrides.NONE));
+        assertTrue(tooShort.getMessage().endsWith("the tuple has 2 elements, but the value has 1"), tooShort.getMessage());
     }
 
     @Test
@@ -320,6 +324,30 @@ public abstract class AbstractCqlCrudIT {
                 .iterator().next().getLong("write_time");
 
         assertEquals(toEpochMicros(eventTime), writeTimeMicros);
+    }
+
+    @Test
+    @DisplayName("A Timestamp Field given as ISO-8601 text sets the write timestamp, and text that is no timestamp is rejected naming the field")
+    void testTimestampFieldFromText() {
+        final Instant eventTime = Instant.parse("2026-01-02T03:04:05.678Z");
+        final RecordSchema schema = new SimpleRecordSchema(List.of(
+                new RecordField("sender", RecordFieldType.STRING.getDataType()),
+                new RecordField("receiver", RecordFieldType.STRING.getDataType()),
+                new RecordField("message", RecordFieldType.STRING.getDataType()),
+                new RecordField("when_sent", RecordFieldType.TIMESTAMP.getDataType()),
+                new RecordField("happened", RecordFieldType.STRING.getDataType())));
+        final WriteOverrides overrides = new WriteOverrides(null, "happened", false);
+        sessionProvider.insert(new QualifiedTableName(null, "message"), new MapRecord(schema,
+                Map.of("sender", "text.time.sender", "receiver", "r", "message", "m", "when_sent", eventTime, "happened", eventTime.toString())), Map.of(), overrides);
+
+        assertEquals(toEpochMicros(eventTime), session.execute(
+                "select WRITETIME(message) as write_time from testspace.message where sender = 'text.time.sender' and receiver = 'r'")
+                .one().getLong("write_time"));
+
+        final IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class, () -> sessionProvider.insert(
+                new QualifiedTableName(null, "message"), new MapRecord(schema,
+                        Map.of("sender", "bad.time.sender", "receiver", "r", "message", "m", "when_sent", eventTime, "happened", "yesterday")), Map.of(), overrides));
+        assertTrue(rejected.getMessage().startsWith("Timestamp Field 'happened' cannot supply a write timestamp: "), rejected.getMessage());
     }
 
     @Test

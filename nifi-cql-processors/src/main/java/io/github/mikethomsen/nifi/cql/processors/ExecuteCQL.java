@@ -64,7 +64,8 @@ import static java.lang.String.format;
         + "against a CQL data store (Cassandra or ScyllaDB primarily). Before the statement runs it is validated: it must be "
         + "of the chosen type, an UPDATE or DELETE must have a WHERE clause, the cluster must accept it (so the keyspace, "
         + "table and columns exist), and its '?' bind markers must match the cql.arg.<position> parameters. A SELECT writes "
-        + "its rows as newline-delimited JSON, one object per row, split across FlowFiles as configured; the other "
+        + "its rows as newline-delimited JSON, one object per row, split across FlowFiles as configured, each carrying the "
+        + "incoming FlowFile's attributes apart from its fragment and schema attributes and cql.rows.sent; the other "
         + "statements pass the incoming FlowFile through to success. Failures of the cluster, such as a node going away, "
         + "route to retry; anything wrong with the statement or its parameters routes to failure.")
 @DynamicProperty(name = "cql.arg.<position>", value = "The value to bind to that bind marker",
@@ -302,14 +303,14 @@ public class ExecuteCQL extends AbstractCQLProcessor {
         }
 
         final CQLExecutionService service = cqlSessionService.get();
-        final String cql = context.getProperty(CQL_STATEMENT).evaluateAttributeExpressions(flowFile).getValue();
 
         JsonLinesQueryCallback callback = null;
         final Map<String, String> incomingAttributes = flowFile == null ? Map.of() : flowFile.getAttributes();
 
         try {
-            // Parsed inside the try: a value from a FlowFile attribute that does not parse must route that
-            // FlowFile to failure, not escape onTrigger and leave it at the head of the queue.
+            // Evaluated inside the try: Expression Language that fails on this FlowFile's attributes, or a value
+            // that does not parse, must route the FlowFile to failure, not escape onTrigger and leave it queued.
+            final String cql = context.getProperty(CQL_STATEMENT).evaluateAttributeExpressions(flowFile).getValue();
             final PropertyValue timeoutProperty = context.getProperty(QUERY_TIMEOUT).evaluateAttributeExpressions(flowFile);
             final Duration timeout = timeoutProperty.isSet() ? timeoutProperty.asDuration() : null;
 

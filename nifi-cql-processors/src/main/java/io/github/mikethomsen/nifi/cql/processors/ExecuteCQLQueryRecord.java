@@ -64,16 +64,14 @@ import java.util.regex.Pattern;
 @CapabilityDescription("Execute provided Cassandra Query Language (CQL) select query on a data store that supports CQL (Cassandra or ScyllaDB primarily). Using a" +
         " configured record writer service, it will convert result rows into any output format supported by NiFi's record API.")
 @WritesAttributes({
-        @WritesAttribute(attribute = "fragment.identifier", description = "If 'Max Rows Per Flow File' is set then all FlowFiles from the same query result set "
-                + "will have the same value for the fragment.identifier attribute. This can then be used to correlate the results."),
-        @WritesAttribute(attribute = "fragment.count", description = "If 'Max Rows Per Flow File' is set then this is the total number of  "
-                + "FlowFiles produced by a single ResultSet. This can be used in conjunction with the "
-                + "fragment.identifier attribute in order to know how many FlowFiles belonged to the same incoming ResultSet. If Output Batch Size is set, then this "
-                + "attribute will not be populated."),
-        @WritesAttribute(attribute = "fragment.index", description = "If 'Max Rows Per Flow File' is set then the position of this FlowFile in the list of "
-                + "outgoing FlowFiles that were all derived from the same result set FlowFile. This can be "
-                + "used in conjunction with the fragment.identifier attribute to know which FlowFiles originated from the same query result set and in what order  "
-                + "FlowFiles were produced"),
+        @WritesAttribute(attribute = "mime.type", description = "On each result FlowFile, the MIME type of the configured record writer's output."),
+        @WritesAttribute(attribute = "record.count", description = "On each result FlowFile, the number of rows in it."),
+        @WritesAttribute(attribute = "fragment.identifier", description = "On each result FlowFile, an identifier shared by all FlowFiles of one "
+                + "query's results, so they can be correlated."),
+        @WritesAttribute(attribute = "fragment.index", description = "On each result FlowFile, its position within the query's results, "
+                + "counting from 0."),
+        @WritesAttribute(attribute = "fragment.count", description = "On each result FlowFile, the total number of FlowFiles the query produced. "
+                + "Only set when Output Batch Size is 0, because otherwise earlier FlowFiles are released before the total is known."),
         @WritesAttribute(attribute = "cql.rows.sent", description = "On a FlowFile routed to retry, the number of rows that earlier "
                 + "output had already released downstream before the failure. A retry runs the whole query again, so those rows "
                 + "will be produced a second time.")
@@ -319,6 +317,11 @@ public class ExecuteCQLQueryRecord extends AbstractCQLProcessor {
      * expect, evaluating each against {@code flowFile}'s attributes. Numbering is already known to be
      * consecutive from 1 by {@link #customValidate(ValidationContext)}, so sorting by position is enough.
      */
+    /** What failed, for the error logged: the query is unknown when its own Expression Language could not be evaluated. */
+    private static String describe(final String selectQuery) {
+        return selectQuery == null ? "evaluate the CQL select query" : "execute CQL select query " + selectQuery;
+    }
+
     private List<Object> getQueryParameters(final ProcessContext context, final FlowFile flowFile) {
         final SortedMap<Integer, Object> parametersByPosition = new TreeMap<>();
 
@@ -360,11 +363,10 @@ public class ExecuteCQLQueryRecord extends AbstractCQLProcessor {
         }
 
         final ComponentLog logger = getLogger();
-        final String selectQuery = context.getProperty(CQL_SELECT_QUERY).evaluateAttributeExpressions(fileToProcess).getValue();
+        // Assigned inside the try, so that the error logged for a failure can still name the query when it is known.
+        String selectQuery = null;
         final long maxRowsPerFlowFile = context.getProperty(MAX_ROWS_PER_FLOW_FILE).evaluateAttributeExpressions().asInteger();
         final long outputBatchSize = context.getProperty(OUTPUT_BATCH_SIZE).evaluateAttributeExpressions().asInteger();
-
-        final List<Object> queryParameters = getQueryParameters(context, fileToProcess);
 
         final StopWatch stopWatch = new StopWatch(true);
 
@@ -377,8 +379,10 @@ public class ExecuteCQLQueryRecord extends AbstractCQLProcessor {
                 getLogger(), maxRowsPerFlowFile, outputBatchSize);
 
         try {
-            // Parsed here rather than above: a value from a FlowFile attribute that does not parse must route
-            // that FlowFile to failure, not escape onTrigger and leave it at the head of the queue.
+            // Evaluated here rather than above: Expression Language that fails on this FlowFile's attributes, or a
+            // value that does not parse, must route the FlowFile to failure, not escape onTrigger and leave it queued.
+            selectQuery = context.getProperty(CQL_SELECT_QUERY).evaluateAttributeExpressions(fileToProcess).getValue();
+            final List<Object> queryParameters = getQueryParameters(context, fileToProcess);
             final PropertyValue fetchSizeProperty = context.getProperty(FETCH_SIZE).evaluateAttributeExpressions(fileToProcess);
             final Integer fetchSizeOverride = fetchSizeProperty.isSet() ? fetchSizeProperty.asInteger() : null;
             if (fetchSizeOverride != null && fetchSizeOverride < 0) {
@@ -413,11 +417,9 @@ public class ExecuteCQLQueryRecord extends AbstractCQLProcessor {
         // roll the session back and leave the same FlowFile at the head of the queue to fail again forever.
         } catch (final RuntimeException e) {
             if (context.hasIncomingConnection()) {
-                logger.error(String.format("Unable to execute CQL select query %s for %s routing to failure",
-                        selectQuery, fileToProcess), e);
+                logger.error(String.format("Unable to %s for %s, routing to failure", describe(selectQuery), fileToProcess), e);
             } else {
-                logger.error(String.format("Unable to execute CQL select query %s",
-                        selectQuery), e);
+                logger.error(String.format("Unable to %s", describe(selectQuery)), e);
             }
             routeFailure(context, session, fileToProcess, incomingAttributes, callback, REL_FAILURE);
         }

@@ -45,6 +45,7 @@ import java.math.BigInteger;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -59,6 +60,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
@@ -290,6 +292,18 @@ public class CassandraCQLExecutionServiceWritePathTest {
                 // Neither may be narrowed: 300 is not a byte, and the BigInteger does not fit the long a timestamp is.
                 arguments(new Object[] {1, 300}, DataTypes.BLOB), arguments(new BigInteger("123456789012345678901234567890"), DataTypes.TIMESTAMP),
                 arguments("42.5", DataTypes.COUNTER));
+    }
+
+    @Test
+    @DisplayName("A varint or number text too large to be real is rejected at once rather than after working out every digit")
+    public void testHugeNumbersAreRejectedQuickly() {
+        assertTimeoutPreemptively(Duration.ofSeconds(1), () -> {
+            for (final Object value : List.of(new BigDecimal("1e100000000"), new BigDecimal("1e-100000000"), "7".repeat(1_000_000))) {
+                assertThrows(IllegalArgumentException.class, () -> convertForBind(value, DataTypes.VARINT));
+            }
+            assertThrows(IllegalArgumentException.class, () -> convertForBind("7".repeat(1_000_000), DataTypes.DECIMAL));
+        });
+        assertEquals(new BigInteger("1" + "0".repeat(9_999)), convertForBind(new BigDecimal("1e9999"), DataTypes.VARINT));
     }
 
     @Test

@@ -751,30 +751,22 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
 
     /**
      * Converts a record field's value into epoch microseconds, the unit Cassandra/ScyllaDB expect for an
-     * explicit write timestamp (distinct from the millisecond precision of the CQL {@code timestamp} type).
+     * explicit write timestamp (distinct from the millisecond precision of the CQL {@code timestamp} type). It
+     * takes the same forms as a {@code timestamp} column, ISO-8601 and epoch-millisecond text included.
      */
     static long toEpochMicros(final Object value) {
-        final Instant instant;
-        if (value instanceof Instant instantValue) {
-            instant = instantValue;
-        } else if (value instanceof java.util.Date dateValue) {
-            instant = dateValue.toInstant();
-        } else if (value instanceof Number numberValue) {
-            try {
-                instant = Instant.ofEpochMilli(ExactNumbers.toEpochMillis(numberValue));
-            } catch (final RejectedValueException e) {
-                throw new RejectedValueException("A write timestamp cannot be derived: " + e.getMessage(), e);
-            }
-        } else {
-            throw new IllegalArgumentException("Cannot derive a write timestamp from a value of type "
-                    + (value == null ? "null" : value.getClass().getName()));
+        if (value == null) {
+            throw new RejectedValueException("the value is null", null);
         }
+        // A java.sql.Timestamp, as NiFi holds a TIMESTAMP field, keeps its microseconds here; toInstant, made for a
+        // millisecond column, would drop them.
+        final Instant instant = value instanceof java.sql.Timestamp timestamp ? timestamp.toInstant() : toInstant(value);
 
         // Microseconds since the epoch overflow a long about 292,000 years out, well inside what an Instant holds.
         try {
             return Math.addExact(Math.multiplyExact(instant.getEpochSecond(), 1_000_000L), instant.getNano() / 1_000L);
         } catch (final ArithmeticException e) {
-            throw new RejectedValueException("A write timestamp cannot be derived: the value is out of range for a CQL write timestamp", null);
+            throw new RejectedValueException("the value is out of range for a CQL write timestamp", null);
         }
     }
 
@@ -1468,7 +1460,12 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
      */
     private void setTimestampBindValue(Object[] values, PreparedStatement preparedStatement, Record record, WriteOverrides overrides) {
         int index = preparedStatement.getVariableDefinitions().firstIndexOf(WRITE_TIMESTAMP_BIND_MARKER);
-        values[index] = toEpochMicros(record.getValue(overrides.timestampField()));
+        final String field = overrides.timestampField();
+        try {
+            values[index] = toEpochMicros(record.getValue(field));
+        } catch (final RuntimeException e) {
+            throw conversionFailure("Timestamp Field '" + field + "' cannot supply a write timestamp", e);
+        }
     }
 
     /** {@link #convertForCqlType}, with any failure reported against {@code target}, such as a field name. */
@@ -1656,8 +1653,8 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         final List<?> elements = toElementStream(value).toList();
         final List<DataType> componentTypes = tupleType.getComponentTypes();
         if (elements.size() != componentTypes.size()) {
-            throw new RejectedValueException(String.format("the value has %d elements, but the tuple has %d",
-                    elements.size(), componentTypes.size()), null);
+            throw new RejectedValueException(String.format("the tuple has %d elements, but the value has %d",
+                    componentTypes.size(), elements.size()), null);
         }
 
         TupleValue tuple = tupleType.newValue();
@@ -1749,22 +1746,51 @@ public class CassandraCQLExecutionService extends AbstractCQLExecutionService im
         };
     }
 
+    /**
+     * A varint from a decimal, with its size checked first: the conversion works out every digit, so a value such
+     * as 1e100000000, or 1e-100000000 before it is found to have a fraction, would take minutes and gigabytes.
+     */
     private static BigInteger wholeNumber(final BigDecimal decimal, final Object value) {
+        if (decimal.signum() == 0) {
+            return BigInteger.ZERO;
+        }
+        // Digits before the decimal point, as a long, since a scale near Integer.MIN_VALUE would overflow an int.
+        final long integerDigits = (long) decimal.precision() - decimal.scale();
+        if (integerDigits <= 0) {
+            throw notWholeNumber(value, null);
+        }
+        if (integerDigits > MAX_NUMBER_DIGITS || decimal.precision() > MAX_NUMBER_DIGITS) {
+            throw new RejectedValueException(String.format(
+                    "the value%s has too many digits for a varint here: more than %d", shown(value), MAX_NUMBER_DIGITS), null);
+        }
         try {
             return decimal.toBigIntegerExact();
         } catch (final ArithmeticException e) {
-            throw new RejectedValueException(String.format("the value%s is not a whole number", shown(value)), e);
+            throw notWholeNumber(value, e);
         }
+    }
+
+    private static RejectedValueException notWholeNumber(final Object value, final ArithmeticException e) {
+        return new RejectedValueException(String.format("the value%s is not a whole number", shown(value)), e);
     }
 
     private static <T> T parseNumber(final Object value, final Function<String, T> parser) {
         final String text = value.toString().trim();
+        // Java parses number text in time that grows with the square of its length, so a megabyte of digits would
+        // hold the thread for seconds; no real decimal or varint is anywhere near this long.
+        if (text.length() > MAX_NUMBER_DIGITS) {
+            throw new RejectedValueException(String.format(
+                    "the value is too long to be a number here: %d characters, more than %d", text.length(), MAX_NUMBER_DIGITS), null);
+        }
         try {
             return parser.apply(text);
         } catch (final NumberFormatException e) {
             throw new RejectedValueException(String.format("the value%s is not a number", shown(text)), e);
         }
     }
+
+    /** The most digits a varint, or decimal or varint text, may have: far more than any real value needs. */
+    private static final int MAX_NUMBER_DIGITS = 10_000;
 
     private static final Pattern IPV4_LITERAL = Pattern.compile("(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})");
 

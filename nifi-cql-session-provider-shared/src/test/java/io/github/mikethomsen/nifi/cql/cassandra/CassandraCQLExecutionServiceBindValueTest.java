@@ -89,13 +89,23 @@ public class CassandraCQLExecutionServiceBindValueTest {
     }
 
     @Test
+    @DisplayName("A write timestamp takes the forms a timestamp column takes, and a TIMESTAMP field keeps its microseconds")
+    void testWriteTimestampAcceptsTimestampColumnForms() {
+        final long micros = EXPECTED.getEpochSecond() * 1_000_000L;
+        assertEquals(micros, CassandraCQLExecutionService.toEpochMicros("2026-08-07T14:30:00Z"));
+        assertEquals(micros, CassandraCQLExecutionService.toEpochMicros(String.valueOf(EXPECTED.toEpochMilli())));
+        assertEquals(micros, CassandraCQLExecutionService.toEpochMicros(new java.sql.Date(EXPECTED.toEpochMilli())));
+        assertEquals(micros + 123, CassandraCQLExecutionService.toEpochMicros(Timestamp.from(EXPECTED.plusNanos(123_000))));
+    }
+
+    @Test
     @DisplayName("A decimal with a huge exponent is rejected, or rounded to the epoch, at once rather than after working out every digit")
     void testHugeExponentIsHandledQuickly() {
         final BigDecimal huge = new BigDecimal("1e100000000");
         assertTimeoutPreemptively(Duration.ofSeconds(1), () -> {
             assertThrows(IllegalArgumentException.class, () -> CassandraCQLExecutionService.toInstant(huge));
             final IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> CassandraCQLExecutionService.toEpochMicros(huge));
-            assertEquals("A write timestamp cannot be derived: the value is out of range for timestamp", e.getMessage());
+            assertEquals("the value is out of range for timestamp", e.getMessage());
             assertEquals(Instant.EPOCH, CassandraCQLExecutionService.toInstant(new BigDecimal("1e-100000000")));
         });
     }
