@@ -15,10 +15,22 @@ Maven group: `io.github.mikethomsen`. Java packages: `io.github.mikethomsen.nifi
 
 ## Build
 
+The build requires JDK 21, the version NiFi 2.x runs on, and stops at once on any other.
+
 ```bash
-mvn clean install                          # unit tests
-mvn -Pintegration-tests verify             # adds Cassandra and ScyllaDB integration tests (needs Docker)
+mvn clean install                                                    # unit tests
+mvn -Pintegration-tests verify                                       # adds the Cassandra and ScyllaDB integration tests (needs Docker)
+mvn -Pintegration-tests -DTEST_CQL_CONNECTION_TESTS=true verify      # also the authentication and TLS tests, as CI runs
 ```
+
+Without `-DTEST_CQL_CONNECTION_TESTS=true`, the authentication and TLS tests are reported as skipped.
+
+ScyllaDB needs about 1.05 million asynchronous I/O contexts per instance, counted against the
+kernel's system-wide `fs.aio-max-nr`. Any other ScyllaDB on the machine, such as a local container,
+uses the same pool. When too few are left, each ScyllaDB test container times out waiting for
+"initialization completed". Compare `/proc/sys/fs/aio-nr` with `/proc/sys/fs/aio-max-nr`, and raise
+the limit if needed, for example `sudo sysctl -w fs.aio-max-nr=3145728`. Add the same setting to a
+file in `/etc/sysctl.d/` to keep it after a reboot.
 
 ## Logging bound values
 
