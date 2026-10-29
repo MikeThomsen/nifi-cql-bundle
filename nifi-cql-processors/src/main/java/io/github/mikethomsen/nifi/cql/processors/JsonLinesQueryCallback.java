@@ -53,6 +53,7 @@ final class JsonLinesQueryCallback implements CQLQueryCallback {
     private final int minQueued;
     private final String fragmentId = UUID.randomUUID().toString();
     private final List<FlowFile> queued = new ArrayList<>();
+    private final Map<String, String> inherited;
 
     private FlowFile parent;
     private FlowFile current;
@@ -66,6 +67,7 @@ final class JsonLinesQueryCallback implements CQLQueryCallback {
     JsonLinesQueryCallback(final FlowFile parent, final ProcessSession session, final ComponentLog logger,
                            final long rowsPerFlowFile, final int minQueued) {
         this.parent = parent;
+        this.inherited = ResultAttributes.inheritedFrom(parent);
         this.session = session;
         this.logger = logger;
         this.rowsPerFlowFile = rowsPerFlowFile;
@@ -94,7 +96,7 @@ final class JsonLinesQueryCallback implements CQLQueryCallback {
 
         try {
             if (current == null) {
-                current = session.create();
+                current = session.putAllAttributes(session.create(), inherited);
                 currentStream = session.write(current);
                 currentRowCount = 0;
             }
@@ -143,6 +145,11 @@ final class JsonLinesQueryCallback implements CQLQueryCallback {
             queued.replaceAll(flowFile -> session.putAttribute(flowFile, FragmentAttributes.FRAGMENT_COUNT.key(), total));
         }
 
+        // Lineage can only name the incoming FlowFile while it is still in the session, so FlowFiles released after
+        // it, when Minimum FlowFiles Queued sends output early, carry its attributes but no link to it.
+        if (parent != null) {
+            session.getProvenanceReporter().fork(parent, queued);
+        }
         session.transfer(queued, REL_SUCCESS);
         rowsReleased += queuedRowCount;
         queuedRowCount = 0;

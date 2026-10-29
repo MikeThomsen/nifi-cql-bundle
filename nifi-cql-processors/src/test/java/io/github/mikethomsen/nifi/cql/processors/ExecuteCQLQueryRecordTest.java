@@ -29,6 +29,8 @@ import org.apache.nifi.serialization.record.Record;
 import org.apache.nifi.serialization.record.RecordField;
 import org.apache.nifi.serialization.record.RecordFieldType;
 import io.github.mikethomsen.nifi.cql.api.service.QueryOverrides;
+import org.apache.nifi.provenance.ProvenanceEventRecord;
+import org.apache.nifi.provenance.ProvenanceEventType;
 import org.apache.nifi.util.MockFlowFile;
 import org.apache.nifi.util.TestRunner;
 import org.apache.nifi.util.TestRunners;
@@ -440,5 +442,42 @@ public class ExecuteCQLQueryRecordTest {
         testRunner.assertTransferCount(ExecuteCQLQueryRecord.REL_SUCCESS, 0);
         testRunner.assertTransferCount(ExecuteCQLQueryRecord.REL_ORIGINAL, 0);
         testRunner.assertTransferCount(ExecuteCQLQueryRecord.REL_RETRY, 0);
+    }
+
+    @Test
+    @DisplayName("A query or parameter whose Expression Language fails on the FlowFile's attributes routes to failure instead of leaving it queued")
+    public void testExpressionThatFailsRoutesToFailure() throws Exception {
+        final MockCQLQueryExecutionService service = configureServices();
+
+        testRunner.setProperty(ExecuteCQLQueryRecord.CQL_SELECT_QUERY, "SELECT * FROM cql_table WHERE k = ${request:jsonPath('$.k')}");
+        testRunner.enqueue("", Map.of("request", "{not json"));
+        testRunner.run();
+
+        testRunner.setProperty(ExecuteCQLQueryRecord.CQL_SELECT_QUERY, "SELECT * FROM cql_table WHERE k = ?");
+        testRunner.setProperty("cql.arg.1", "${request:jsonPath('$.k')}");
+        testRunner.enqueue("", Map.of("request", "{not json"));
+        testRunner.run();
+
+        testRunner.assertAllFlowFilesTransferred(ExecuteCQLQueryRecord.REL_FAILURE, 2);
+        testRunner.assertQueueEmpty();
+        assertTrue(testRunner.getLogger().getErrorMessages().getFirst().getMsg().contains("Unable to evaluate the CQL select query for"));
+        assertNull(service.getLastQueryOverrides());
+    }
+
+    @Test
+    @DisplayName("Each result carries the incoming FlowFile's attributes, apart from those describing it, and is recorded as forked from it")
+    public void testResultsCarryIncomingAttributes() throws Exception {
+        runWithSingleRecord(Map.of("correlation", "req-42", "cql.rows.sent", "5", "avro.schema", "{}", "schema.name", "order"));
+
+        final MockFlowFile incoming = testRunner.getFlowFilesForRelationship(ExecuteCQLQueryRecord.REL_ORIGINAL).getFirst();
+        final MockFlowFile result = testRunner.getFlowFilesForRelationship(ExecuteCQLQueryRecord.REL_SUCCESS).getFirst();
+        result.assertAttributeEquals("correlation", "req-42");
+        result.assertAttributeNotExists("cql.rows.sent");
+        result.assertAttributeNotExists("avro.schema");
+        result.assertAttributeNotExists("schema.name");
+        final ProvenanceEventRecord fork = testRunner.getProvenanceEvents().getFirst();
+        assertEquals(ProvenanceEventType.FORK, fork.getEventType());
+        assertEquals(List.of(incoming.getAttribute("uuid")), fork.getParentUuids());
+        assertEquals(List.of(result.getAttribute("uuid")), fork.getChildUuids());
     }
 }

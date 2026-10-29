@@ -48,6 +48,7 @@ possible, with the following notable behaviors:
   epoch, so a record whose schema was inferred from text still writes. A fraction of a millisecond is dropped,
   since a CQL timestamp cannot hold one; a number outside the range of a timestamp is rejected.
 * `DECIMAL` and `VARINT` accept any number or numeric text; `VARINT` rejects one with a fractional part.
+  Numeric text longer than 10,000 characters, and a `VARINT` value of more than 10,000 digits, are rejected.
 * `INET` accepts an IPv4 or IPv6 address literal as text. A host name is rejected rather than looked up.
 * `BLOB` accepts a record's bytes (`ARRAY` of `BYTE`), as the record readers produce them, or an array of
   whole numbers from -128 to 255, so bytes written unsigned (`200`) or signed (`-56`) both work. Any other
@@ -116,7 +117,9 @@ a rollback can also be triggered by a failure that has nothing to do with Run Du
   most Cassandra and ScyllaDB accept. A value outside that range fails validation, or routes the FlowFile to
   `failure` when it comes from Expression Language.
 * _Timestamp Field_ names a field in each record whose value supplies the CQL write timestamp for that
-  record's statement, instead of the time the statement executes. This makes retries/reprocessing safe:
+  record's statement, instead of the time the statement executes. It takes the same values as a `TIMESTAMP`
+  column: a timestamp or date, a number of milliseconds since the epoch, or ISO-8601 or numeric text. A
+  `TIMESTAMP` field keeps its microseconds. This makes retries/reprocessing safe:
   resubmitting the same record with the same timestamp is a true no-op rather than a write that could win a
   last-write-wins race against different data written to the same row in the meantime. Also ignored for
   `INCREMENT`/`DECREMENT`, since Cassandra/ScyllaDB do not support a custom write timestamp on counter

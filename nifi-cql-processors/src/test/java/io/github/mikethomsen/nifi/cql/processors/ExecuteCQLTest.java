@@ -27,6 +27,8 @@ import io.github.mikethomsen.nifi.cql.api.lookup.CqlStatementResult;
 import io.github.mikethomsen.nifi.cql.api.service.CQLExecutionService;
 import io.github.mikethomsen.nifi.cql.api.service.CQLQueryCallback;
 import io.github.mikethomsen.nifi.cql.api.service.QueryOverrides;
+import org.apache.nifi.provenance.ProvenanceEventRecord;
+import org.apache.nifi.provenance.ProvenanceEventType;
 import org.apache.nifi.util.MockFlowFile;
 import org.apache.nifi.util.TestRunner;
 import org.apache.nifi.util.TestRunners;
@@ -346,5 +348,43 @@ public class ExecuteCQLTest {
     @DisplayName("A dynamic property that is not cql.arg.<position> is rejected")
     void testBadParameterName() {
         assertThrows(IllegalArgumentException.class, () -> runner.setProperty("id", "${id}"));
+    }
+
+    @Test
+    @DisplayName("A statement whose Expression Language fails on the FlowFile's attributes routes to failure instead of leaving it queued")
+    void testStatementExpressionThatFailsRoutesToFailure() {
+        runner.setProperty(ExecuteCQL.CQL_STATEMENT, "select id, name from person where id = ${request:jsonPath('$.id')}");
+        runner.removeProperty("cql.arg.1");
+
+        runner.enqueue("", Map.of("request", "{not json"));
+        runner.run();
+
+        runner.assertAllFlowFilesTransferred(ExecuteCQL.REL_FAILURE, 1);
+        runner.assertQueueEmpty();
+    }
+
+    @Test
+    @DisplayName("Each result carries the incoming FlowFile's attributes, apart from those describing it, and is recorded as forked from it")
+    void testResultsCarryIncomingAttributes() {
+        returnRows(3, false);
+        runner.setProperty(ExecuteCQL.ROWS_PER_FLOW_FILE, "2");
+
+        runner.enqueue("", Map.of("id", "7", "correlation", "req-42", "cql.rows.sent", "5", "fragment.count", "9", "avro.schema", "{}", "schema.name", "order"));
+        runner.run();
+
+        final MockFlowFile incoming = runner.getFlowFilesForRelationship(ExecuteCQL.REL_ORIGINAL).getFirst();
+        final List<MockFlowFile> results = runner.getFlowFilesForRelationship(ExecuteCQL.REL_SUCCESS);
+        assertEquals(2, results.size());
+        for (final MockFlowFile result : results) {
+            result.assertAttributeEquals("correlation", "req-42");
+            result.assertAttributeNotExists("cql.rows.sent");
+            result.assertAttributeNotExists("avro.schema");
+            result.assertAttributeNotExists("schema.name");
+            result.assertAttributeEquals("fragment.count", "2");
+        }
+        final ProvenanceEventRecord fork = runner.getProvenanceEvents().getFirst();
+        assertEquals(ProvenanceEventType.FORK, fork.getEventType());
+        assertEquals(List.of(incoming.getAttribute("uuid")), fork.getParentUuids());
+        assertEquals(2, fork.getChildUuids().size());
     }
 }

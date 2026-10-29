@@ -536,4 +536,18 @@ public class PutCQLRecordTest {
         });
         assertEquals(expected, actual);
     }
+
+    @Test
+    @DisplayName("A table name whose Expression Language fails on the FlowFile's attributes routes to failure instead of leaving it queued")
+    void testTableExpressionThatFailsRoutesToFailure() {
+        runner.setProperty(PutCQLRecord.TABLE, "${request:jsonPath('$.table')}");
+        mockReader.addRecord("Hello, world", "test_user");
+
+        runner.enqueue("", Map.of("request", "{not json"));
+        runner.run();
+
+        runner.assertAllFlowFilesTransferred(PutCQLRecord.REL_FAILURE, 1);
+        runner.assertQueueEmpty();
+        runner.getFlowFilesForRelationship(PutCQLRecord.REL_FAILURE).getFirst().assertAttributeEquals(PutCQLRecord.RECORDS_WRITTEN_ATTRIBUTE, "0");
+    }
 }

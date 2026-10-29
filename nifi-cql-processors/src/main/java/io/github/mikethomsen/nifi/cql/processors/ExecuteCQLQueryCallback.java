@@ -47,6 +47,7 @@ public class ExecuteCQLQueryCallback implements CQLQueryCallback {
     private long rowsPerFlowFile;
     private long flowFilesPerBatch;
     private FlowFile parentFlowFile;
+    private final Map<String, String> inherited;
 
     private boolean commitImmediately;
     private final List<FlowFile> flowFileBatch;
@@ -65,6 +66,7 @@ public class ExecuteCQLQueryCallback implements CQLQueryCallback {
                                    long rowsPerFlowfile,
                                    long flowFilesPerBatch) {
         this.parentFlowFile = parentFlowFile;
+        this.inherited = ResultAttributes.inheritedFrom(parentFlowFile);
         this.writerFactory = writerFactory;
         this.session = session;
         this.logger = logger;
@@ -153,6 +155,7 @@ public class ExecuteCQLQueryCallback implements CQLQueryCallback {
                 currentRecordCount = 0L;
 
                 if (commitImmediately && flowFileBatch.size() == flowFilesPerBatch) {
+                    forkFromParent();
                     session.transfer(flowFileBatch, REL_SUCCESS);
 
                     if (parentFlowFile != null) {
@@ -172,7 +175,7 @@ public class ExecuteCQLQueryCallback implements CQLQueryCallback {
             }
         }
 
-        final FlowFile newFlowFile = session.create();
+        final FlowFile newFlowFile = session.putAllAttributes(session.create(), inherited);
         final OutputStream out = session.write(newFlowFile);
         try {
             recordWriter = writerFactory.createWriter(logger, schema, out, newFlowFile);
@@ -208,6 +211,7 @@ public class ExecuteCQLQueryCallback implements CQLQueryCallback {
 
                 updateFlowFileAttributes();
                 finalizeFragmentCounts();
+                forkFromParent();
 
                 if (parentFlowFile != null) {
                     session.transfer(parentFlowFile, REL_ORIGINAL);
@@ -224,6 +228,16 @@ public class ExecuteCQLQueryCallback implements CQLQueryCallback {
             removeUnfinishedFlowFiles();
 
             throw new ProcessException("Error writing record", ex);
+        }
+    }
+
+    /**
+     * Records the results as derived from the incoming FlowFile. Lineage can only name it while it is still in the
+     * session, so FlowFiles released after it, when Output Batch Size commits early, carry its attributes but no link.
+     */
+    private void forkFromParent() {
+        if (parentFlowFile != null) {
+            session.getProvenanceReporter().fork(parentFlowFile, flowFileBatch);
         }
     }
 

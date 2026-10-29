@@ -282,7 +282,9 @@ public class PutCQLRecord extends AbstractCQLProcessor {
             .name("Timestamp Field")
             .description("""
                     The name of a field in each record whose value supplies the CQL write timestamp for that record's INSERT or \
-                    SET-method UPDATE statement, instead of the time the statement executes. Useful for safe retries/reprocessing: \
+                    SET-method UPDATE statement, instead of the time the statement executes. It takes the same values as a timestamp \
+                    column: a timestamp or date, a number of milliseconds since the epoch, or ISO-8601 or numeric text. \
+                    Useful for safe retries/reprocessing: \
                     resubmitting the same record with the same timestamp is a true no-op rather than a write that could win a \
                     last-write-wins race against different data written to the same row in the meantime. Ignored for Increment/Decrement \
                     updates, since Cassandra/ScyllaDB do not support a custom write timestamp on counter columns. The field is also written \
@@ -408,13 +410,20 @@ public class PutCQLRecord extends AbstractCQLProcessor {
 
         CQLExecutionService sessionProviderService = super.cqlSessionService.get();
 
-        final String cassandraTable = context.getProperty(TABLE).evaluateAttributeExpressions(inputFlowFile).getValue();
         final QualifiedTableName qualifiedTableName;
+        final String updateKeys;
+        final String timestampField;
 
+        // Evaluated inside the try: Expression Language that fails on this FlowFile's attributes must route the
+        // FlowFile to failure, not escape onTrigger and leave it queued.
         try {
+            final String cassandraTable = context.getProperty(TABLE).evaluateAttributeExpressions(inputFlowFile).getValue();
             qualifiedTableName = qualifyTable(cassandraTable, sessionProviderService.getDefaultKeyspace());
-        } catch (IllegalArgumentException e) {
-            getLogger().error("Error processing", e);
+            updateKeys = context.getProperty(UPDATE_KEYS).evaluateAttributeExpressions(inputFlowFile).getValue();
+            final PropertyValue timestampFieldProperty = context.getProperty(TIMESTAMP_FIELD).evaluateAttributeExpressions(inputFlowFile);
+            timestampField = timestampFieldProperty.isSet() ? timestampFieldProperty.getValue() : null;
+        } catch (RuntimeException e) {
+            getLogger().error("Invalid PutCQLRecord configuration for {}", inputFlowFile, e);
             // Nothing has been read yet, but cql.records.written is promised on every failure, so say 0 explicitly.
             session.transfer(session.putAttribute(inputFlowFile, RECORDS_WRITTEN_ATTRIBUTE, "0"), REL_FAILURE);
             return;
@@ -424,7 +433,6 @@ public class PutCQLRecord extends AbstractCQLProcessor {
 
         final RecordReaderFactory recordParserFactory = context.getProperty(RECORD_READER_FACTORY).asControllerService(RecordReaderFactory.class);
         final int batchSize = context.getProperty(BATCH_SIZE).evaluateAttributeExpressions().asInteger();
-        final String updateKeys = context.getProperty(UPDATE_KEYS).evaluateAttributeExpressions(inputFlowFile).getValue();
 
         final String statementTypeProperty = context.getProperty(STATEMENT_TYPE).getValue();
         String statementType = statementTypeProperty;
@@ -454,9 +462,6 @@ public class PutCQLRecord extends AbstractCQLProcessor {
 
             batchStatementType = StringUtils.isBlank(batchStatementTypeAttr) ? null : batchStatementTypeAttr.toUpperCase();
         }
-
-        final PropertyValue timestampFieldProperty = context.getProperty(TIMESTAMP_FIELD).evaluateAttributeExpressions(inputFlowFile);
-        final String timestampField = timestampFieldProperty.isSet() ? timestampFieldProperty.getValue() : null;
 
         final boolean unsetNulls = NULLS_UNSET.getValue().equals(context.getProperty(NULL_VALUE_HANDLING).getValue());
 
