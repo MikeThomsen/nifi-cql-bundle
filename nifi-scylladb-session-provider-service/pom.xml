@@ -24,6 +24,9 @@
     <artifactId>nifi-scylladb-session-provider-service</artifactId>
     <packaging>jar</packaging>
 
+    <name>NiFi ScyllaDB Session Provider</name>
+    <description>Provides a ScyllaDB session provider controller service</description>
+
     <properties>
         <driver.version>4.19.2.0</driver.version>
     </properties>

@@ -13,13 +13,17 @@
   See the License for the specific language governing permissions and
   limitations under the License.
 -->
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd" child.project.url.inherit.append.path="false">
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>io.github.mikethomsen</groupId>
     <artifactId>nifi-cql-bundle</artifactId>
     <version>1.0.0</version>
     <packaging>pom</packaging>
+
+    <name>NiFi CQL Bundle</name>
+    <description>A NiFi bundle that provides CRUD support for CQL-compatible databases</description>
+    <url>https://github.com/MikeThomsen/nifi-cql-bundle</url>
 
     <licenses>
         <license>
@@ -29,6 +33,21 @@
         </license>
     </licenses>
 
+    <developers>
+        <developer>
+            <id>MikeThomsen</id>
+            <name>Mike Thomsen</name>
+            <email>mikerthomsen@gmail.com</email>
+            <url>https://github.com/MikeThomsen</url>
+        </developer>
+    </developers>
+
+    <scm child.scm.connection.inherit.append.path="false" child.scm.developerConnection.inherit.append.path="false" child.scm.url.inherit.append.path="false">
+        <connection>scm:git:https://github.com/MikeThomsen/nifi-cql-bundle.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/MikeThomsen/nifi-cql-bundle.git</developerConnection>
+        <url>https://github.com/MikeThomsen/nifi-cql-bundle</url>
+    </scm>
+
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>21</maven.compiler.release>
@@ -36,7 +55,6 @@
         <nifi.version>2.12.0</nifi.version>
         <nifi.nar.plugin.version>2.4.0</nifi.nar.plugin.version>
 
-        <cassandra.sdk.version>3.11.5</cassandra.sdk.version>
         <cassandra.guava.version>19.0</cassandra.guava.version>
 
                 <junit.version>6.1.3</junit.version>
@@ -49,6 +67,22 @@
         <maven.failsafe.plugin.version>3.6.0</maven.failsafe.plugin.version>
         <maven.jar.plugin.version>3.5.1</maven.jar.plugin.version>
         <maven.enforcer.plugin.version>3.6.3</maven.enforcer.plugin.version>
+        <maven.resources.plugin.version>3.5.0</maven.resources.plugin.version>
+        <maven.install.plugin.version>3.2.0</maven.install.plugin.version>
+        <maven.deploy.plugin.version>3.2.0</maven.deploy.plugin.version>
+        <maven.source.plugin.version>3.3.1</maven.source.plugin.version>
+        <maven.javadoc.plugin.version>3.12.0</maven.javadoc.plugin.version>
+        <maven.gpg.plugin.version>3.2.8</maven.gpg.plugin.version>
+        <!-- The release signing key, the one published to keyserver.ubuntu.com. Without it GPG signs
+            with the first key in the keyring. -->
+        <gpg.keyname>F0C22D2439087F0D</gpg.keyname>
+        <central.publishing.plugin.version>0.12.0</central.publishing.plugin.version>
+        <!-- A module with no Java of its own sets these to package, so the release profile gives it
+            the javadoc or sources jar Maven Central requires, holding only a README. -->
+        <release.placeholder.javadoc.phase>none</release.placeholder.javadoc.phase>
+        <release.placeholder.sources.phase>none</release.placeholder.sources.phase>
+        <!-- A NAR has its own LICENSE and NOTICE, listing what it bundles, so NAR modules set this. -->
+        <root.notices.skip>false</root.notices.skip>
     </properties>
 
     <modules>
@@ -359,6 +393,41 @@
                     <version>${maven.enforcer.plugin.version}</version>
                 </plugin>
                 <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-resources-plugin</artifactId>
+                    <version>${maven.resources.plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-install-plugin</artifactId>
+                    <version>${maven.install.plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-deploy-plugin</artifactId>
+                    <version>${maven.deploy.plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-source-plugin</artifactId>
+                    <version>${maven.source.plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-javadoc-plugin</artifactId>
+                    <version>${maven.javadoc.plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-gpg-plugin</artifactId>
+                    <version>${maven.gpg.plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.sonatype.central</groupId>
+                    <artifactId>central-publishing-maven-plugin</artifactId>
+                    <version>${central.publishing.plugin.version}</version>
+                </plugin>
+                <plugin>
                     <groupId>org.apache.nifi</groupId>
                     <artifactId>nifi-nar-maven-plugin</artifactId>
                     <version>${nifi.nar.plugin.version}</version>
@@ -384,6 +453,33 @@
                                     <message>This bundle is built and tested on JDK 21, the version NiFi 2.x runs on. Switch to a JDK 21 and build again.</message>
                                 </requireJavaVersion>
                             </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <!-- Every jar carries the project's LICENSE and NOTICE. -->
+                        <id>copy-root-notices</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>copy-resources</goal>
+                        </goals>
+                        <configuration>
+                            <skip>${root.notices.skip}</skip>
+                            <outputDirectory>${project.build.outputDirectory}/META-INF</outputDirectory>
+                            <resources>
+                                <resource>
+                                    <directory>${project.basedir}/..</directory>
+                                    <includes>
+                                        <include>LICENSE</include>
+                                        <include>NOTICE</include>
+                                    </includes>
+                                </resource>
+                            </resources>
                         </configuration>
                     </execution>
                 </executions>
@@ -424,6 +520,98 @@
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
                             <skipTests>true</skipTests>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <!-- Builds what Maven Central requires and uploads it: source and javadoc jars, a GPG
+                signature on every file, and a deployment to the Central Portal. Run with
+                mvn -Prelease deploy. The token goes in settings.xml under the server id central,
+                and the signing key's passphrase in the MAVEN_GPG_PASSPHRASE environment variable.
+                The deployment is validated but not published, so it can be checked in the
+                Portal and published from there. -->
+            <id>release</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals>
+                                    <goal>jar-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-jar-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>placeholder-javadoc</id>
+                                <phase>${release.placeholder.javadoc.phase}</phase>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                                <configuration>
+                                    <classifier>javadoc</classifier>
+                                    <classesDirectory>${project.basedir}/../release/placeholder</classesDirectory>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>placeholder-sources</id>
+                                <phase>${release.placeholder.sources.phase}</phase>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                                <configuration>
+                                    <classifier>sources</classifier>
+                                    <classesDirectory>${project.basedir}/../release/placeholder</classesDirectory>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <autoPublish>false</autoPublish>
+                            <waitUntil>validated</waitUntil>
+                            <excludeArtifacts>
+                                <!-- Test classes only; its main jar is empty. -->
+                                <artifact>nifi-cql-it-common</artifact>
+                            </excludeArtifacts>
                         </configuration>
                     </plugin>
                 </plugins>

@@ -24,7 +24,11 @@
     <artifactId>nifi-cassandra-session-provider-service</artifactId>
     <packaging>jar</packaging>
 
+    <name>NiFi Cassandra Session Provider</name>
+    <description>Provides a CQL session provider controller service for Apache Cassandra</description>
+
     <properties>
+        <release.placeholder.javadoc.phase>package</release.placeholder.javadoc.phase>
         <driver.version>4.19.3</driver.version>
     </properties>
 

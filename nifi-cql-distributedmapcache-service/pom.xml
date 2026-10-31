@@ -24,6 +24,9 @@
     <artifactId>nifi-cql-distributedmapcache-service</artifactId>
     <packaging>jar</packaging>
 
+    <name>NiFi CQL DistributedMapCache Service</name>
+    <description>Provides a CQL-based implementation of a DistributedMapCache client</description>
+
     <dependencies>
         <dependency>
             <groupId>org.apache.nifi</groupId>

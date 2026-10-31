@@ -38,10 +38,6 @@ The processor can run two ways:
   against, so property values must already be resolvable without one, and a processing error yields the
   processor rather than routing anything (there's no FlowFile to route).
 
-The `executecql.row.count` attribute on the routed FlowFile(s) is not written directly by this processor;
-row-count reporting comes from the fragmentation attributes described below, which is the accurate signal
-when a single query's results are split across more than one FlowFile.
-
 ## Query parameters
 
 A query can carry `?` bind markers, each supplied by a dynamic property named `cql.arg.<position>`, where

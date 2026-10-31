@@ -25,6 +25,14 @@
     <artifactId>nifi-cql-nar</artifactId>
     <packaging>nar</packaging>
 
+    <name>NiFi CQL NAR</name>
+    <description>Deploys the processors for the CQL bundle</description>
+
+    <properties>
+        <root.notices.skip>true</root.notices.skip>
+        <release.placeholder.javadoc.phase>package</release.placeholder.javadoc.phase>
+    </properties>
+
     <dependencyManagement>
         <dependencies>
             <!-- Provided in nifi-cassandra-services-api-nar -->
