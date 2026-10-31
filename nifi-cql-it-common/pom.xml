@@ -24,8 +24,13 @@
     <artifactId>nifi-cql-it-common</artifactId>
     <packaging>jar</packaging>
 
+    <name>NiFi CQL Integration Test Common</name>
+    <description>Shared integration test base classes and helpers, so the same tests run against both Cassandra and ScyllaDB</description>
+
     <properties>
         <driver.version>4.19.3</driver.version>
+        <!-- Only the test classes are used, by the service modules' builds, so nothing is deployed. -->
+        <maven.deploy.skip>true</maven.deploy.skip>
     </properties>
 
     <!--

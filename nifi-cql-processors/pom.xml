@@ -25,6 +25,9 @@
     <artifactId>nifi-cql-processors</artifactId>
     <packaging>jar</packaging>
 
+    <name>NiFi CQL Processors</name>
+    <description>Provides processors for accessing a CQL database using CQL-native capabilities instead of a JDBC translation API</description>
+
     <dependencies>
         <dependency>
             <groupId>org.apache.nifi</groupId>

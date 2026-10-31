@@ -24,6 +24,14 @@
     <artifactId>nifi-cql-services-api-nar</artifactId>
     <packaging>nar</packaging>
 
+    <name>NiFi CQL Services API NAR</name>
+    <description>Deploys the CQL services API</description>
+
+    <properties>
+        <root.notices.skip>true</root.notices.skip>
+        <release.placeholder.javadoc.phase>package</release.placeholder.javadoc.phase>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>org.apache.nifi</groupId>

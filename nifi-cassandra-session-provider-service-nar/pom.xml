@@ -24,6 +24,14 @@
     <artifactId>nifi-cassandra-session-provider-service-nar</artifactId>
     <packaging>nar</packaging>
 
+    <name>NiFi Cassandra Session Provider NAR</name>
+    <description>Deploys the Apache Cassandra session provider</description>
+
+    <properties>
+        <root.notices.skip>true</root.notices.skip>
+        <release.placeholder.javadoc.phase>package</release.placeholder.javadoc.phase>
+    </properties>
+
     <dependencyManagement>
         <dependencies>
             <!-- Provided in nifi-cassandra-services-api-nar -->

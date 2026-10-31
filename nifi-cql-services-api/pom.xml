@@ -24,6 +24,9 @@
     <artifactId>nifi-cql-services-api</artifactId>
     <packaging>jar</packaging>
 
+    <name>NiFi CQL Services API</name>
+    <description>Provides common classes and interfaces for CQL support without dependencies on a specific implementation provider</description>
+
     <dependencies>
         <dependency>
             <groupId>org.apache.nifi</groupId>

@@ -24,6 +24,9 @@
     <artifactId>nifi-cql-session-provider-shared</artifactId>
     <packaging>jar</packaging>
 
+    <name>NiFi CQL Session Provider Shared Lib</name>
+    <description>A shared library that facilitates maximum code reuse between the Cassandra and ScyllaDB session providers</description>
+
     <properties>
         <driver.version>4.19.3</driver.version>
     </properties>

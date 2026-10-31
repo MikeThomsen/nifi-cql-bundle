@@ -254,7 +254,7 @@ class FlexibleCodecTest {
 
     /**
      * Widening is not the same as narrowing: a number too large for the column, or with a fraction it cannot hold,
-     * is an error rather than a wrapped or truncated value. Each of these was stored wrong before (B23).
+     * is an error rather than a wrapped or truncated value.
      */
     static Stream<Arguments> numericRejections() {
         return Stream.of(

@@ -24,6 +24,14 @@
     <artifactId>nifi-cql-distributedmapcache-service-nar</artifactId>
     <packaging>nar</packaging>
 
+    <name>NiFi CQL DistributedMapCache Service NAR</name>
+    <description>Deploys the CQL DistributedMapCache client</description>
+
+    <properties>
+        <root.notices.skip>true</root.notices.skip>
+        <release.placeholder.javadoc.phase>package</release.placeholder.javadoc.phase>
+    </properties>
+
     <dependencyManagement>
         <dependencies>
             <!-- Provided in nifi-cql-services-api-nar -->
