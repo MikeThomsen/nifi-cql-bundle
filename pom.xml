@@ -75,7 +75,7 @@
         <maven.gpg.plugin.version>3.2.8</maven.gpg.plugin.version>
         <!-- The release signing key, the one published to keyserver.ubuntu.com. Without it GPG signs
             with the first key in the keyring. -->
-        <gpg.keyname>F0C22D2439087F0D</gpg.keyname>
+        <gpg.keyname>3A9FBF0525B9BCB4</gpg.keyname>
         <central.publishing.plugin.version>0.12.0</central.publishing.plugin.version>
         <!-- A module with no Java of its own sets these to package, so the release profile gives it
             the javadoc or sources jar Maven Central requires, holding only a README. -->
