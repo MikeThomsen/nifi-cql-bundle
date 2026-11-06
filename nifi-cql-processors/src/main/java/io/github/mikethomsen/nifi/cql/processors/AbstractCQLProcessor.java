@@ -18,6 +18,7 @@ package io.github.mikethomsen.nifi.cql.processors;
 
 import org.apache.nifi.annotation.lifecycle.OnScheduled;
 import org.apache.nifi.components.PropertyDescriptor;
+import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.processor.AbstractProcessor;
 import org.apache.nifi.processor.ProcessContext;
 import org.apache.nifi.processor.Relationship;
@@ -55,6 +56,31 @@ public abstract class AbstractCQLProcessor extends AbstractProcessor {
             .build();
 
     protected final AtomicReference<CQLExecutionService> cqlSessionService = new AtomicReference<>(null);
+
+    /**
+     * Describes a dynamic property whose name the processor does not accept, for
+     * {@code getSupportedDynamicPropertyDescriptor} to return instead of throwing.
+     *
+     * <p>NiFi looks up names that are not properties at all through the same method. After every processor update,
+     * {@code ProcessorAuditor} asks for a descriptor for each changed setting, keyed by labels such as "Name" or
+     * "Auto Terminated Relationships", to check whether it is sensitive. An exception there escapes to the REST API as
+     * 400 Bad Request after the change has been applied but before the flow is saved. A descriptor that always fails
+     * validation keeps those lookups working, and a mistyped dynamic property still makes the processor invalid with
+     * the explanation as the reason.
+     */
+    static PropertyDescriptor unsupportedDynamicProperty(final String propertyDescriptorName, final String explanation) {
+        return new PropertyDescriptor.Builder()
+                .name(propertyDescriptorName)
+                .description(explanation)
+                .dynamic(true)
+                .addValidator((subject, input, context) -> new ValidationResult.Builder()
+                        .subject(subject)
+                        .input(input)
+                        .valid(false)
+                        .explanation(explanation)
+                        .build())
+                .build();
+    }
 
     @OnScheduled
     public void onScheduled(ProcessContext context) {

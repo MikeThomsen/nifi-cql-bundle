@@ -15,6 +15,7 @@
  */
 package io.github.mikethomsen.nifi.cql.processors;
 
+import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.serialization.SimpleRecordSchema;
 import org.apache.nifi.serialization.record.MapRecord;
 import org.apache.nifi.serialization.record.RecordField;
@@ -41,6 +42,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -344,9 +346,14 @@ public class ExecuteCQLTest {
     }
 
     @Test
-    @DisplayName("A dynamic property that is not cql.arg.<position> is rejected")
+    @DisplayName("A dynamic property that is not cql.arg.<position> makes the processor invalid")
     void testBadParameterName() {
-        assertThrows(IllegalArgumentException.class, () -> runner.setProperty("id", "${id}"));
+        final ValidationResult result = runner.setProperty("id", "${id}");
+
+        assertFalse(result.isValid());
+        assertTrue(result.getExplanation().contains("'id' is not a valid parameter name"),
+                "Expected the explanation to name the invalid property, but was: " + result.getExplanation());
+        runner.assertNotValid();
     }
 
     @Test
