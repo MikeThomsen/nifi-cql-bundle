@@ -16,7 +16,7 @@ Maven group: `io.github.mikethomsen`. Java packages: `io.github.mikethomsen.nifi
 ## Install
 
 Copy the NARs you need into NiFi's `lib` directory, or its extensions directory, and restart NiFi.
-They are published to Maven Central as `io.github.mikethomsen:<artifactId>:1.0.0`, type `nar`.
+They are published to Maven Central as `io.github.mikethomsen:<artifactId>:1.0.1`, type `nar`.
 
 | NAR | Needed for |
 |---|---|
@@ -105,6 +105,17 @@ processors and services re-pointed:
 | `org.apache.nifi:nifi-cql-*` | `io.github.mikethomsen:nifi-cql-*` |
 
 ## Release notes
+
+### 1.0.1
+
+Fixed
+
+- Changing a setting that isn't a property on `PutCQLRecord`, `ExecuteCQLQueryRecord` or `ExecuteCQL`
+  (such as the name, run schedule, concurrent tasks or auto-terminated relationships) no longer fails
+  with HTTP 400. NiFi had applied such a change in memory but not saved the flow, so it could be lost
+  on restart.
+- A dynamic property with a name the processor doesn't accept is now kept and makes the processor
+  invalid, with the same explanation as before, instead of being refused when it is added.
 
 ### 1.0.0
 
