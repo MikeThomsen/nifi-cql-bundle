@@ -19,6 +19,7 @@ package io.github.mikethomsen.nifi.cql.processors;
 
 import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.nifi.controller.ControllerService;
+import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.flowfile.attributes.FragmentAttributes;
 import io.github.mikethomsen.nifi.cql.processors.mock.FailingRecordSetWriterFactory;
 import io.github.mikethomsen.nifi.cql.processors.mock.MockCQLQueryExecutionService;
@@ -53,10 +54,10 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class ExecuteCQLQueryRecordTest {
@@ -374,9 +375,14 @@ public class ExecuteCQLQueryRecordTest {
     }
 
     @Test
-    @DisplayName("Verify that a dynamic property which is not a positional parameter is rejected outright")
+    @DisplayName("Verify that a dynamic property which is not a positional parameter makes the processor invalid")
     public void testUnrecognizedDynamicPropertyNameIsRejected() {
-        assertThrows(IllegalArgumentException.class, () -> testRunner.setProperty("cql.parameter.1", "value"));
+        final ValidationResult result = testRunner.setProperty("cql.parameter.1", "value");
+
+        assertFalse(result.isValid());
+        assertTrue(result.getExplanation().contains("'cql.parameter.1' is not a valid query parameter name"),
+                "Expected the explanation to name the invalid property, but was: " + result.getExplanation());
+        testRunner.assertNotValid();
     }
 
     @Test

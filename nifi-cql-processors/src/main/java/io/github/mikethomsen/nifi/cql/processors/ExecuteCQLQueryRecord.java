@@ -244,7 +244,7 @@ public class ExecuteCQLQueryRecord extends AbstractCQLProcessor {
         final Matcher matcher = QUERY_PARAMETER_PATTERN.matcher(propertyDescriptorName);
 
         if (!matcher.matches()) {
-            throw new IllegalArgumentException(String.format(
+            return unsupportedDynamicProperty(propertyDescriptorName, String.format(
                     "'%s' is not a valid query parameter name; positional parameters are named cql.arg.1, cql.arg.2, and so on",
                     propertyDescriptorName));
         }

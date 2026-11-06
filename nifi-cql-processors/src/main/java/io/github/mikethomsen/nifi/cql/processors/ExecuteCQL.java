@@ -212,7 +212,7 @@ public class ExecuteCQL extends AbstractCQLProcessor {
         final Matcher matcher = PARAMETER_PATTERN.matcher(propertyDescriptorName);
 
         if (!matcher.matches()) {
-            throw new IllegalArgumentException(format(
+            return unsupportedDynamicProperty(propertyDescriptorName, format(
                     "'%s' is not a valid parameter name; positional parameters are named cql.arg.1, cql.arg.2, and so on",
                     propertyDescriptorName));
         }

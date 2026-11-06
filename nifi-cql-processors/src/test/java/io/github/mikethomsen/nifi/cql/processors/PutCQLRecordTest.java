@@ -18,6 +18,7 @@
 package io.github.mikethomsen.nifi.cql.processors;
 
 import org.apache.nifi.components.PropertyDescriptor;
+import org.apache.nifi.components.ValidationResult;
 import org.apache.nifi.processor.exception.ProcessException;
 import org.apache.nifi.provenance.ProvenanceEventRecord;
 import org.apache.nifi.record.path.RecordPath;
@@ -53,7 +54,7 @@ import java.util.stream.Stream;
 
 import static io.github.mikethomsen.nifi.cql.processors.constants.StatementType.UPDATE_TYPE;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 import static org.mockito.Mockito.any;
@@ -450,7 +451,7 @@ public class PutCQLRecordTest {
     }
 
     @ParameterizedTest
-    @DisplayName("A dynamic property name that isn't keyspace.table.field is rejected")
+    @DisplayName("A dynamic property name that isn't keyspace.table.field makes the processor invalid")
     @ValueSource(strings = {
             "id_field",                          // missing keyspace and table
             "my_table.id_field",                 // missing keyspace
@@ -463,16 +464,17 @@ public class PutCQLRecordTest {
             "my_keyspace.my_table.id field"       // whitespace inside a segment
     })
     void testDynamicPropertyDescriptorRejectsNonQualifiedName(String propertyName) {
-        PutCQLRecord processor = new PutCQLRecord();
+        // Rejected through validation rather than an exception: NiFi also looks up names that are not properties
+        // (such as "Auto Terminated Relationships", from ProcessorAuditor), and an exception there fails the update.
+        ValidationResult result = runner.setProperty(propertyName, "/sender");
 
-        IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
-                () -> processor.getSupportedDynamicPropertyDescriptor(propertyName));
-
+        assertFalse(result.isValid());
         // Asserted on every case rather than once in a separate test: a user who mistypes one of several
         // dynamic properties needs the message to say which one, and that is only useful if it holds for
         // every rejection rather than for the one input a standalone test happened to pick.
-        assertTrue(exception.getMessage().contains(propertyName),
-                "Expected the exception message to name the invalid property, but was: " + exception.getMessage());
+        assertTrue(result.getExplanation().contains(propertyName),
+                "Expected the explanation to name the invalid property, but was: " + result.getExplanation());
+        runner.assertNotValid();
     }
 
     /**

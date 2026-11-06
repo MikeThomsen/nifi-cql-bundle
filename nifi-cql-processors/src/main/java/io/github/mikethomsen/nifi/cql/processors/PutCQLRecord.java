@@ -335,7 +335,8 @@ public class PutCQLRecord extends AbstractCQLProcessor {
         Matcher matcher = QUALIFIED_TABLE_PATTERN.matcher(propertyDescriptorName);
 
         if (!matcher.matches()) {
-            throw new IllegalArgumentException(format("%s is not a valid qualified table name and field name", propertyDescriptorName));
+            return unsupportedDynamicProperty(propertyDescriptorName,
+                    format("%s is not a valid qualified table name and field name", propertyDescriptorName));
         }
 
         String keyspace = matcher.group("keyspace");
