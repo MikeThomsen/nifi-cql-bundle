@@ -1,0 +1,103 @@
+name: Attach NARs to GitHub Release
+
+# Copies the release's NARs and their GPG signatures from Maven Central to the GitHub release, so
+# the files people download from GitHub are the same signed files Maven Central serves. Nothing is
+# rebuilt here.
+#
+# It runs when a release is published. The Central deployment is published by hand from the
+# Portal and then takes a while to reach repo1.maven.org, so the job waits for the files to
+# appear. To attach the files to an existing release, or to try again after the wait ran out, run
+# it by hand from the Actions tab with the release's tag.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of the release to attach the NARs to, such as v1.0.1
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+  GROUP_PATH: io/github/mikethomsen
+  # The release signing key, the one gpg.keyname in pom.xml names, as a full fingerprint.
+  SIGNING_KEY: F5FD30D660F7B2C87FAB0FF53A9FBF0525B9BCB4
+  # How long to wait for the files to reach Maven Central.
+  WAIT_MINUTES: 120
+
+jobs:
+  attach:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Find the NAR modules
+        run: |
+          version="${TAG#v}"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          # Each NAR module's directory is named after its artifactId.
+          modules=""
+          for pom in */pom.xml; do
+            dir="${pom%/pom.xml}"
+            if grep -q '<packaging>nar</packaging>' "$pom"; then
+              if ! grep -q "<artifactId>$dir</artifactId>" "$pom"; then
+                echo "::error::$pom does not declare artifactId $dir"
+                exit 1
+              fi
+              modules="$modules $dir"
+            fi
+          done
+          if [ -z "$modules" ]; then
+            echo "::error::No NAR modules found"
+            exit 1
+          fi
+          echo "NAR modules:$modules"
+          echo "MODULES=$modules" >> "$GITHUB_ENV"
+
+      - name: Download the NARs from Maven Central
+        run: |
+          mkdir -p "$RUNNER_TEMP/nars"
+          cd "$RUNNER_TEMP/nars"
+          deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
+          for artifact in $MODULES; do
+            base="https://repo1.maven.org/maven2/$GROUP_PATH/$artifact/$VERSION/$artifact-$VERSION.nar"
+            until curl -fsS -o /dev/null --head "$base.asc"; do
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "::error::$artifact $VERSION did not reach Maven Central within $WAIT_MINUTES minutes"
+                exit 1
+              fi
+              echo "Waiting for $artifact $VERSION on Maven Central"
+              sleep 60
+            done
+            for ext in "" .asc .sha1; do
+              curl -fsSL --retry 3 -o "$artifact-$VERSION.nar$ext" "$base$ext"
+            done
+          done
+
+      - name: Verify checksums and signatures
+        run: |
+          cd "$RUNNER_TEMP/nars"
+          gpg --batch --keyserver hkps://keyserver.ubuntu.com --recv-keys "$SIGNING_KEY"
+          for artifact in $MODULES; do
+            nar="$artifact-$VERSION.nar"
+            echo "$(cat "$nar.sha1")  $nar" | sha1sum -c -
+            # Accept only a good signature made by the release key.
+            gpg --batch --status-fd 1 --verify "$nar.asc" "$nar" 2>/dev/null \
+              | grep -q "^\[GNUPG:\] VALIDSIG $SIGNING_KEY " \
+              || { echo "::error::$nar is not signed by $SIGNING_KEY"; exit 1; }
+            rm "$nar.sha1"
+          done
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd "$RUNNER_TEMP/nars"
+          gh release upload "$TAG" *.nar *.nar.asc --clobber --repo "$GITHUB_REPOSITORY"
